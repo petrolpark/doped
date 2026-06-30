@@ -38,7 +38,7 @@ def _check_potcar_dir_not_setup_warning_error(dds, message, poscar=True):
         ending_string = "so only '(unperturbed) `POSCAR` and `KPOINTS` files will be generated."
 
     elif not poscar and dds.charge_state != 0:  # only KPOINTS can be written so no good
-        ending_string = "so no input files will be generated."
+        ending_string = "so no input filepops will be generated."
 
     else:
         ending_string = "so `POTCAR` files will not be generated."
