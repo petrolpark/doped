@@ -5,24 +5,142 @@ Code to generate FHI-aims defect calculation input files.
 import contextlib
 import copy
 import os
+import shutil
 import warnings
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from monty.json import MSONable
 from monty.serialization import dumpfn
+from pymatgen.core import SETTINGS
 from pymatgen.core.structure import Structure
 from pymatgen.io.aims.sets import \
     AimsInputSet  # TODO remove dependency on pre-alpha package
 from pymatgen.util.typing import PathLike
 
-from doped import _doped_obj_properties_methods
+from doped import _doped_obj_properties_methods, get_mp_context, pool_manager
 from doped.core import DefectEntry
 from doped.generation import (DefectsGenerator, get_defect_name_from_entry,
                               name_defect_entries)
 from doped.utils.parsing import _get_bulk_supercell, _get_defect_supercell
 from doped.utils.symmetry import _frac_coords_sort_func
+
+_SPECIES_DEFAULTS_SHORTHANDS = ("light", "tight", "really_tight")
+AIMS_PATH: str | None = None
+AIMS_PATH_SEARCHED = False
+
+r"""
+Lazily infer the AIMS species-defaults directory if AIMS_SPECIES_DIR is not set.
+This allows fallback discovery from common AIMS binary locations on the host.
+"""
+def _infer_species_dir_from_exe_path(aims_exe: Path) -> str | None:
+    candidate_dirs = [
+        aims_exe.parent.parent / "species_defaults",
+        aims_exe.parent.parent / "share" / "aims" / "species_defaults",
+        aims_exe.parent.parent / "aims" / "species_defaults",
+        aims_exe.parent / "species_defaults",
+    ]
+    for candidate in candidate_dirs:
+        if (candidate / "defaults_2020" / "light").is_dir():
+            return str(candidate)
+    return None
+
+
+def _discover_aims_species_dir() -> str | None:
+    global AIMS_PATH, AIMS_PATH_SEARCHED
+    if AIMS_PATH is not None:
+        return AIMS_PATH
+    if AIMS_PATH_SEARCHED:
+        return None
+    AIMS_PATH_SEARCHED = True
+
+    aims_species_dir = SETTINGS.get("AIMS_SPECIES_DIR")
+    if aims_species_dir:
+        AIMS_PATH = aims_species_dir
+        return AIMS_PATH
+
+    search_paths = []
+    binary_path = shutil.which("aims")
+    if binary_path:
+        search_paths.append(Path(binary_path))
+    for path in (
+        "/opt/aims/bin/aims",
+        "/opt/fhi-aims/bin/aims",
+        "/usr/local/bin/aims",
+        "/usr/bin/aims",
+        "/snap/bin/aims",
+    ):
+        exe = Path(path)
+        if exe.exists():
+            search_paths.append(exe)
+
+    for exe in search_paths:
+        species_dir = _infer_species_dir_from_exe_path(exe)
+        if species_dir:
+            warnings.warn(
+                f"Found FHI-aims executable at {exe}. "
+                "Set AIMS_SPECIES_DIR in pymatgen settings to the directory containing "
+                "defaults_2020 for reliable species-default resolution.",
+                UserWarning,
+                stacklevel=3,
+            )
+            AIMS_PATH = species_dir
+            return AIMS_PATH
+
+    warnings.warn(
+        "AIMS_SPECIES_DIR is not configured in pymatgen settings and a valid "
+        "FHI-aims species defaults directory could not be inferred from a common "
+        "binary location. Please set AIMS_SPECIES_DIR to the directory containing "
+        "defaults_2020.",
+        UserWarning,
+        stacklevel=3,
+    )
+    return None
+
+
+def _resolve_species_defaults(species_defaults: PathLike | str) -> str:
+    """Return an existing directory containing FHI-aims species-default files.
+
+    ``"light"``, ``"tight"``, and ``"really_tight"`` are reserved
+    shorthands for ``<AIMS_SPECIES_DIR>/defaults_2020/<shorthand>``, where
+    ``AIMS_SPECIES_DIR`` is pymatgen's configured FHI-aims species-defaults
+    directory.
+
+    If the input is a string that is not one of the three shorthand values,
+    it is first interpreted as a literal path. If that literal path is not
+    absolute and ``AIMS_SPECIES_DIR`` is configured, the path is also
+    interpreted relative to ``AIMS_SPECIES_DIR``.
+
+    If ``AIMS_SPECIES_DIR`` is not configured, this module will attempt to
+    infer it lazily from a known AIMS executable location. It will warn if
+    the executable is found and a warning if it cannot infer a valid path.
+    """
+    if isinstance(species_defaults, str) and species_defaults in _SPECIES_DEFAULTS_SHORTHANDS:
+        aims_species_dir = SETTINGS.get("AIMS_SPECIES_DIR") or _discover_aims_species_dir()
+        if not aims_species_dir:
+            raise ValueError(
+                "AIMS_SPECIES_DIR must be configured in pymatgen settings to use the "
+                f"{species_defaults!r} species_defaults shorthand. Alternatively, pass the full "
+                "path to the directory containing the element default files."
+            )
+        species_defaults_path = Path(aims_species_dir) / "defaults_2020" / species_defaults
+    else:
+        species_defaults_path = Path(species_defaults).expanduser()
+        if not species_defaults_path.is_absolute():
+            aims_species_dir = SETTINGS.get("AIMS_SPECIES_DIR") or _discover_aims_species_dir()
+            if aims_species_dir:
+                relative_path = Path(aims_species_dir) / species_defaults
+                if relative_path.is_dir():
+                    species_defaults_path = relative_path
+
+    if not species_defaults_path.is_dir():
+        raise FileNotFoundError(
+            "species_defaults must be an existing directory containing FHI-aims element default "
+            f"files, got: {species_defaults_path}"
+        )
+    return str(species_defaults_path.resolve())
 
 
 class DopedAimsInputSet(AimsInputSet):
@@ -30,6 +148,51 @@ class DopedAimsInputSet(AimsInputSet):
     Extension to ``pymatgen-io-aims`` ``AimsInputSet`` object for ``FHI-aims`` defect calculations,
     including SnB rattling functionality
     """
+
+
+    def _structure_for_aims(self, structure: Structure) -> Structure:
+        r"""
+        Return a copy with element-only species and explicit per-site charge.
+
+        The FHI-supplied ``pyfhiaims`` module makes certain assumptions about ``pymatgen`` ``Structure`` objects that are not always true for ``Structure`` objects generated by ``doped``.
+        Specifically, that ``species_name`` does not include the charge. This method strips the charge from the species name and adds the explicit ``charge`` site 
+        property to the ``Structure`` that is used by ``pyfhiaims`` to write the ``geometry.in`` file.
+        
+        """
+        aims_structure = structure.copy()
+        charges = []
+        needs_charge_property = False
+
+        for site in aims_structure:
+            explicit_charge = site.properties.get("charge")
+            specie_charge = getattr(site.specie, "oxi_state", None)
+
+            if explicit_charge is not None:
+                charges.append(explicit_charge)
+                if specie_charge is not None and explicit_charge != specie_charge:
+                    raise ValueError(
+                        "site.properties['charge'] and species oxidation state do not agree."
+                    )
+                needs_charge_property = True
+            elif specie_charge is not None:
+                charges.append(specie_charge)
+                if specie_charge != 0:
+                    needs_charge_property = True
+            else:
+                charges.append(0.0)
+
+        if charges:
+            charge_delta = float(self.charge_state) - float(sum(charges))
+            if abs(charge_delta) > 1e-12:
+                charges[0] += charge_delta
+                needs_charge_property = True
+
+        if needs_charge_property:
+            aims_structure.add_site_property("charge", charges)
+
+        aims_structure.remove_oxidation_states()
+        return aims_structure
+
     def __init__(
         self,
         parameters: dict[str, Any],
@@ -39,7 +202,8 @@ class DopedAimsInputSet(AimsInputSet):
         r"""
         TODO docs
         """
-        super().__init__(parameters, structure, properties)
+        self._structure = self._structure_for_aims(structure)
+        super().__init__(parameters, self._structure, properties)
 
     def write_input(
         self,
@@ -129,6 +293,7 @@ class AimsDefectRelaxSet(MSONable):
         charge_state: int | None = None,
         user_parameters: dict[str, Any] | None = None,
         user_properties: Sequence[str] | None = None,
+        species_defaults: PathLike | None = None,
         **kwargs,
     ):
         r"""
@@ -144,14 +309,30 @@ class AimsDefectRelaxSet(MSONable):
 
             user_properties (Sequence[str]):
 
+            species_defaults (PathLike):
+                Full path to the FHI-aims directory containing the element
+                default files (e.g. ``.../defaults_2020/tight``). Alternatively,
+                ``"light"``, ``"tight"``, or ``"really_tight"`` uses the
+                corresponding ``defaults_2020`` subdirectory of pymatgen's
+                configured ``AIMS_SPECIES_DIR``.
+                A path relative to ``AIMS_SPECIES_DIR`` is also accepted if
+                ``AIMS_SPECIES_DIR`` is configured.
+
         """
 
         self.defect_entry = defect_entry
         self.charge_state = (
             charge_state if charge_state is not None else getattr(defect_entry, "charge_state", 0)
         )
-        self.user_parameters = user_parameters or {}
+        self.user_parameters = copy.deepcopy(user_parameters) if user_parameters else {}
         self.user_properties = user_properties or ("energy", "free_energy")
+        self.species_defaults = species_defaults
+        if species_defaults is not None:
+            if "species_dir" in self.user_parameters:
+                raise ValueError(
+                    "Specify either species_defaults or user_parameters['species_dir'], not both."
+                )
+            self.user_parameters["species_dir"] = _resolve_species_defaults(species_defaults)
         self.kwargs = kwargs
 
         if isinstance(self.defect_entry, Structure):
@@ -163,6 +344,20 @@ class AimsDefectRelaxSet(MSONable):
         else:
             raise TypeError("defect_entry must be a doped/pymatgen DefectEntry or Structure object.")
 
+        # Use the defect entry / provided `charge_state` as canonical.
+        # If the user supplied `user_parameters['charge']` and it differs,
+        # warn the user and override with `charge_state`.
+        if "charge" in self.user_parameters and int(self.user_parameters["charge"]) != int(self.charge_state):
+            warnings.warn(
+                "user_parameters['charge'] differs from defect `charge_state`; preferring defect `charge_state`.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        try:
+            self.user_parameters["charge"] = int(self.charge_state)
+        except Exception:
+            self.user_parameters["charge"] = self.charge_state
         #TODO probably need some required properties in user_properties in order to get the info needed for parsing
 
     @property
@@ -303,6 +498,7 @@ class AimsDefectsSet(MSONable):
         defect_entries: DefectsGenerator | dict[str, DefectEntry] | list[DefectEntry] | DefectEntry,
         user_parameters: dict[str, Any] | None = None,
         user_properties: Sequence[str] | None = None,
+        species_defaults: PathLike | None = None,
         **kwargs,
     ):
         r"""
@@ -313,6 +509,7 @@ class AimsDefectsSet(MSONable):
         """
         self.user_parameters = user_parameters
         self.user_properties = user_properties
+        self.species_defaults = species_defaults
         self.kwargs = kwargs
         self.defect_entries, self.json_name, self.json_obj = self._format_defect_entries_input(
             defect_entries
@@ -323,6 +520,7 @@ class AimsDefectsSet(MSONable):
                 charge_state=defect_entry.charge_state,
                 user_parameters=self.user_parameters,
                 user_properties=self.user_properties,
+                species_defaults=self.species_defaults,
                 **self.kwargs,
             )
             for defect_species, defect_entry in self.defect_entries.items()
