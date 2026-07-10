@@ -13,6 +13,3 @@ class AimsTest(unittest.TestCase):
 
     def tearDown(self):
         pass
-
-    def test_pymatgen_io_aims(self):
-        pass
