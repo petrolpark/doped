@@ -1,0 +1,6 @@
+k_grid_density: 5.0  # used for `aims_std` (non-Γ-only) calculations. `k_grid_density` is a
+# native FHI-aims `control.in` keyword (see the FHI-aims manual); the actual `k_grid` mesh is
+# determined by FHI-aims itself at runtime from the input lattice vectors, following:
+#     n_i = ceil(k_grid_density * 2*pi / |a_i|)
+# where a_i are the real-space lattice vectors. `aims_gam` calculations instead always use
+# an explicit Γ-only `k_grid 1 1 1`.
