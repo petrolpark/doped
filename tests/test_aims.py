@@ -10,7 +10,7 @@ from pymatgen.core import SETTINGS
 from test_utils import EXAMPLE_DIR, data_dir
 
 # temp
-SETTINGS["AIMS_SPECIES_DIR"] = "/home/hw653/Documents/fhi-aims.260331/species_defaults"
+SETTINGS["AIMS_SPECIES_DIR"] = "~/Documents/fhi-aims.260331/species_defaults"
 
 from doped.generation import DefectsGenerator
 from doped.io.aims.inputs import AimsDefectsSet, _resolve_species_defaults
@@ -21,7 +21,7 @@ class AimsTest(unittest.TestCase):
 
     def setUp(self):
         self.prim_cdte = Structure.from_file(f"{EXAMPLE_DIR}/CdTe/relaxed_primitive_POSCAR")
-        self.aims_output_path = os.path.join(data_dir, "aims")
+        self.aims_output_path = Path(data_dir) / "aims"
 
     def test_species_defaults_path_resolution(self):
         """Resolve the default light species_defaults shorthand."""

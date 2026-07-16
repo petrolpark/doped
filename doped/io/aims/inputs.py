@@ -131,13 +131,13 @@ def _resolve_species_defaults(species_defaults: PathLike | str) -> str:
                 f"{species_defaults!r} species_defaults shorthand. Alternatively, pass the full "
                 "path to the directory containing the element default files."
             )
-        species_defaults_path = Path(aims_species_dir) / "defaults_2020" / species_defaults
+        species_defaults_path = Path(aims_species_dir).expanduser() / "defaults_2020" / species_defaults
     else:
         species_defaults_path = Path(species_defaults).expanduser()
         if not species_defaults_path.is_absolute():
             aims_species_dir = SETTINGS.get("AIMS_SPECIES_DIR") or _discover_aims_species_dir()
             if aims_species_dir:
-                relative_path = Path(aims_species_dir) / species_defaults
+                relative_path = Path(aims_species_dir).expanduser() / species_defaults
                 if relative_path.is_dir():
                     species_defaults_path = relative_path
 
