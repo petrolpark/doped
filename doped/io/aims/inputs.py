@@ -21,11 +21,11 @@ from pymatgen.io.aims.sets import \
     AimsInputSet  # TODO remove dependency on pre-alpha package
 from pymatgen.util.typing import PathLike
 
-from doped import _doped_obj_properties_methods, get_mp_context, pool_manager
-from doped.core import DefectEntry
+from doped.core import DefectEntry, _get_bulk_supercell, _get_defect_supercell
 from doped.generation import (DefectsGenerator, get_defect_name_from_entry,
                               name_defect_entries)
-from doped.utils.parsing import _get_bulk_supercell, _get_defect_supercell
+from doped.utils import (_doped_obj_properties_methods, get_mp_context,
+                         pool_manager)
 from doped.utils.symmetry import _frac_coords_sort_func
 
 _SPECIES_DEFAULTS_SHORTHANDS = ("light", "tight", "really_tight")
@@ -33,8 +33,7 @@ AIMS_PATH: str | None = None
 AIMS_PATH_SEARCHED = False
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-PACKAGE_DIR = os.path.dirname(os.path.dirname(MODULE_DIR))
-default_kpoints_set = loadfn(os.path.join(PACKAGE_DIR, "AIMS_sets", "KpointsSet.yaml"))
+default_kpoints_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "KpointsSet.yaml"))
 GAMMA_KPOINTS_SETTINGS = {"k_grid": (1, 1, 1)}
 
 r"""

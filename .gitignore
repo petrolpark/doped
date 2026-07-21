@@ -22,6 +22,10 @@ pypi_packaging.sh
 dist/
 build/
 
+# Virtual environments
+.venv/
+venv/
+
 # Local notes & testing folder
 JOSS/
 local_doped_testing/
