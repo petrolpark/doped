@@ -1,0 +1,12 @@
+output:
+  # `output` lines requested by default for `doped` defect/bulk calculations, so that the
+  # required raw FHI-aims outputs are available for post-processing with the parsing
+  # functions in `doped/io/aims/outputs.py`:
+  - mulliken  # per-atom Mulliken charges/spins, needed for get_mulliken_charges_from_aims_output
+    # and get_atomic_magnetic_moments_from_aims_output (charge-state/magnetisation sanity-checking)
+  - hirshfeld  # per-atom Hirshfeld charges, needed for get_hirshfeld_charges_from_aims_output
+    # (a cheap potential-alignment reference, an alternative to the core-level-shift approach below)
+  - atom_proj_dos -20 5 2000 0.01  # atom-projected density of states (energy window/broadening
+    # can be overridden via `user_parameters`), needed for get_atom_projected_dos and
+    # get_core_level_shift (core-level-shift-based potential alignment,
+    # `_get_bulk_site_potentials_aims(method="core_level_shift")`)

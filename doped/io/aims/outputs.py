@@ -2,10 +2,9 @@
 Parsing of FHI-aims defect / bulk supercell calculation outputs.
 
 These functions load and process FHI-aims output files (``aims.out``, and --
-for charge corrections, not yet implemented -- potential cube files /
-``atom_proj_dos`` files), and can provide the parsed outputs in calculator-
-agnostic form (:class:`~doped.io.outputs.CalculationOutputs`) via
-:func:`get_calculation_outputs`.
+for charge corrections, not yet implemented -- ``atom_proj_dos`` files), and
+can provide the parsed outputs in calculator-agnostic form
+(:class:`~doped.io.outputs.CalculationOutputs`) via :func:`get_calculation_outputs`.
 """
 
 import numpy as np
@@ -14,6 +13,7 @@ from pymatgen.core.structure import Structure
 from pymatgen.util.typing import PathLike
 
 from doped.io.outputs import CalculationOutputs
+from doped.io.utils import find_archived_fname
 
 # --------------------------------------------------------------------------
 # Backend protocol entry points (see the "Adding Support for a New
@@ -64,7 +64,7 @@ def get_calculation_outputs(
     individual parsing steps planned. ``label`` and ``parse_projected_eigen``
     are accepted (and currently ignored) to match the generic ``doped.io``
     backend protocol (used for informative warnings/parsing efficiency
-    choices with other calculators, e.g. VASP).
+    choices with other calculators).
 
     Part of the ``doped.io`` backend protocol.
 
@@ -87,22 +87,20 @@ def get_calculation_outputs(
     """
     raise NotImplementedError
 
-
-# --------------------------------------------------------------------------
-# 1. Reading output files (mirrors get_vasprun/get_outcar/get_locpot in
-#    doped.utils.parsing)
-# --------------------------------------------------------------------------
-
-
 def get_aims_output(aims_out_path: PathLike, **kwargs) -> AimsStdout:
     """
     Read the ``aims.out`` (stdout) file as a ``pyfhiaims`` ``AimsStdout`` object.
 
-    Mirrors ``doped.utils.parsing.get_vasprun``: locates the file (handling
-    ``.gz``/``.xz``/``.bz``/``.lzma`` compression, via
-    ``doped.utils.parsing.find_archived_fname``) and wraps ``AimsStdout``.
+    Locates the file (handling ``.gz``/``.xz``/``.bz``/``.lzma`` compression,
+    via ``doped.io.utils.find_archived_fname``) and wraps it in ``AimsStdout``.
     """
-    raise NotImplementedError
+    aims_out_path = str(aims_out_path)
+    try:
+        return AimsStdout(find_archived_fname(aims_out_path), **kwargs)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"aims.out file not found at {aims_out_path}(.gz/.xz/.bz/.lzma)"
+        ) from exc
 
 
 def get_atom_projected_dos(atom_proj_dos_dir: PathLike, atom_index: int, **kwargs):
@@ -120,37 +118,16 @@ def get_atom_projected_dos(atom_proj_dos_dir: PathLike, atom_index: int, **kwarg
     raise NotImplementedError
 
 
-def get_potential_cube(cube_path: PathLike):
-    """
-    Read an FHI-aims potential cube file (``output cube total_potential`` or
-    ``output cube hartree_potential`` in ``control.in``).
-
-    Mirrors ``doped.utils.parsing.get_locpot`` -- the FHI-aims analog of
-    VASP's ``LOCPOT``, for Freysoldt (FNV)-style planar-averaged potential
-    alignment. No existing ``pymatgen``/``pyfhiaims`` cube-file reader is
-    currently wired up for this; would need e.g. ``ase.io.cube`` or a small
-    custom parser.
-    """
-    raise NotImplementedError
-
-
-# --------------------------------------------------------------------------
-# 2. Charge state / electron count (mirrors get_nelect_from_vasprun,
-#    get_neutral_nelect_from_vasprun and total_charge_from_vasprun)
-# --------------------------------------------------------------------------
-
-
 def get_n_electrons_from_aims_output(aims_output: AimsStdout) -> int:
     """
     Get the number of electrons used in the calculation.
 
-    Unlike VASP (where ``NELECT`` must be reverse-engineered from band
-    occupations -- see ``get_nelect_from_vasprun``), FHI-aims directly prints
-    "Formal number of electrons (from input files)", which ``pyfhiaims``
-    already parses into ``AimsStdout.header_summary["n_electrons"]``. So this
-    is a direct read, not a reconstruction.
+    FHI-aims directly prints "Formal number of electrons (from input
+    files)", which ``pyfhiaims`` already parses into
+    ``AimsStdout.header_summary["n_electrons"]``. So this is a direct read,
+    not a reconstruction.
     """
-    raise NotImplementedError
+    return aims_output.header_summary["n_electrons"]
 
 
 def get_neutral_n_electrons(structure: Structure) -> int:
@@ -158,13 +135,15 @@ def get_neutral_n_electrons(structure: Structure) -> int:
     Get the number of electrons corresponding to a neutral charge state for
     ``structure``.
 
-    Simpler than VASP's ``get_neutral_nelect_from_vasprun`` (no POTCAR
-    ``ZVAL``/pseudopotential lookup needed, since FHI-aims is all-electron):
-    just the sum of atomic numbers over the composition. Can reuse
-    ``doped.utils.parsing._num_electrons_from_charge_state(structure, 0)``
+    Since FHI-aims is all-electron, this is just the sum of atomic numbers
+    over the composition. Can reuse
+    ``doped.utils.symmetry._num_electrons_from_charge_state(structure, 0)``
     directly.
     """
-    raise NotImplementedError
+    from doped.utils.symmetry import \
+        _num_electrons_from_charge_state  # avoid circular import (symmetry imports doped.core)
+
+    return _num_electrons_from_charge_state(structure, 0)
 
 
 def total_charge_from_aims_output(aims_output: AimsStdout) -> int:
@@ -172,31 +151,24 @@ def total_charge_from_aims_output(aims_output: AimsStdout) -> int:
     Determine the total charge state of a system from its ``AimsStdout``.
 
     ``charge = get_neutral_n_electrons(structure) -
-    get_n_electrons_from_aims_output(aims_output)``. Mirrors
-    ``total_charge_from_vasprun``, but exact rather than approximate (no
-    POTCAR-derived uncertainty/fallback logic needed).
+    get_n_electrons_from_aims_output(aims_output)``. This is exact, with no
+    approximation or fallback logic needed.
     """
-    raise NotImplementedError
-
-
-# --------------------------------------------------------------------------
-# 3. Magnetization / spin (mirrors get_magnetization_from_vasprun and
-#    spin_degeneracy_from_vasprun)
-# --------------------------------------------------------------------------
+    structure = aims_output.get_image(-1).geometry.structure
+    return get_neutral_n_electrons(structure) - get_n_electrons_from_aims_output(aims_output)
 
 
 def get_magnetization_from_aims_output(aims_output: AimsStdout) -> float:
     """
     Get the total magnetization (``N_up - N_down``) of the system.
 
-    Unlike VASP (which requires reverse-engineering from eigenvalue
-    occupations, or from projected magnetization for NCL/SOC calculations --
-    see ``get_magnetization_from_vasprun``), FHI-aims directly prints the
-    total spin ('N_up - N_down'), already parsed by ``pyfhiaims`` and exposed
-    as ``AimsStdout.get_image(-1).results["magmom"]``. Direct read, not a
+    FHI-aims directly prints the total spin ('N_up - N_down'), already
+    parsed by ``pyfhiaims`` and exposed as
+    ``AimsStdout.get_image(-1).results["magmom"]``. Direct read, not a
     reconstruction.
     """
-    raise NotImplementedError
+    magmom = aims_output.get_image(-1).results.get("magmom")
+    return 0.0 if magmom is None else float(magmom)
 
 
 def get_atomic_magnetic_moments_from_aims_output(aims_output: AimsStdout) -> np.ndarray:
@@ -204,34 +176,33 @@ def get_atomic_magnetic_moments_from_aims_output(aims_output: AimsStdout) -> np.
     Get the per-atom Mulliken spin moments (requires ``output mulliken`` in
     ``control.in``).
 
-    Exposed as ``AimsStdout.get_image(-1).results["mulliken_spins"]``. No
-    direct equivalent currently in ``doped.utils.parsing`` (would require
-    per-atom ``OUTCAR`` magnetization parsing for VASP), but useful for
-    spin-density sanity-checking on defect supercells.
+    Exposed as ``AimsStdout.get_image(-1).results["mulliken_spins"]``.
+    Useful for spin-density sanity-checking on defect supercells.
     """
-    raise NotImplementedError
+    return np.array(aims_output.get_image(-1).results["mulliken_spins"])
 
 
 def spin_degeneracy_from_aims_output(aims_output: AimsStdout, charge_state: int | None = None) -> int:
     """
     Get the spin degeneracy (multiplicity, ``2S + 1``) of the system.
 
-    Mirrors ``spin_degeneracy_from_vasprun``, using
-    ``get_magnetization_from_aims_output`` in place of
-    ``get_magnetization_from_vasprun`` -- simpler here since that's a direct
-    read rather than a reconstruction from eigenvalue occupations. If
-    ``charge_state`` is ``None``, the electron count for parity-checking
-    should come from ``get_n_electrons_from_aims_output``, else from
-    ``doped.utils.parsing._num_electrons_from_charge_state``.
+    Uses ``get_magnetization_from_aims_output`` for the total magnetization.
+    If ``charge_state`` is ``None``, the electron count for parity-checking
+    comes from ``get_n_electrons_from_aims_output``, else from
+    ``doped.utils.symmetry._num_electrons_from_charge_state``.
     """
-    raise NotImplementedError
+    from doped.utils.symmetry import (  # avoid circular import (symmetry imports doped.core)
+        _num_electrons_from_charge_state,
+        _spin_degeneracy_from_num_electrons_and_magnetization)
 
+    if charge_state is None:
+        num_electrons = get_n_electrons_from_aims_output(aims_output)
+    else:
+        structure = aims_output.get_image(-1).geometry.structure
+        num_electrons = _num_electrons_from_charge_state(structure, charge_state)
 
-# --------------------------------------------------------------------------
-# 4. Site potentials / charge corrections (mirrors
-#    get_core_potentials_from_outcar, _get_bulk_site_potentials and
-#    _get_bulk_locpot_dict)
-# --------------------------------------------------------------------------
+    magnetization = get_magnetization_from_aims_output(aims_output)
+    return _spin_degeneracy_from_num_electrons_and_magnetization(int(num_electrons), magnetization)
 
 
 def get_mulliken_charges_from_aims_output(aims_output: AimsStdout) -> np.ndarray:
@@ -240,7 +211,7 @@ def get_mulliken_charges_from_aims_output(aims_output: AimsStdout) -> np.ndarray
 
     Exposed as ``AimsStdout.get_image(-1).results["mulliken_charges"]``.
     """
-    raise NotImplementedError
+    return np.array(aims_output.get_image(-1).results["mulliken_charges"])
 
 
 def get_hirshfeld_charges_from_aims_output(aims_output: AimsStdout) -> np.ndarray:
@@ -252,7 +223,7 @@ def get_hirshfeld_charges_from_aims_output(aims_output: AimsStdout) -> np.ndarra
     core-level shifts (``get_core_level_shift``), and doesn't require a
     separate ``atom_proj_dos`` output file.
     """
-    raise NotImplementedError
+    return np.array(aims_output.get_image(-1).results["hirshfeld_charges"])
 
 
 def get_core_level_shift(
@@ -269,10 +240,9 @@ def get_core_level_shift(
     Per the FHI-aims manual (Section 4.11, "Formation energies of charged
     defects"), potential alignment for charged-defect formation energies
     should align on the shift in core-state eigenvalues of an atom far from
-    the defect, between the defect and (equivalent) bulk calculations --
-    since, being all-electron, FHI-aims has no VASP/``OUTCAR``-style
-    averaged core potential (``ICORELEVEL``) to align on instead. This is
-    the FHI-aims analog of ``get_core_potentials_from_outcar``.
+    the defect, between the defect and (equivalent) bulk calculations,
+    since FHI-aims is all-electron and so has no averaged core potential to
+    align on instead:
 
     ``core_level_shift = (defect_core_eigenvalue - defect_VBM) -
     (bulk_core_eigenvalue - bulk_VBM)``
@@ -284,33 +254,10 @@ def get_core_level_shift(
     raise NotImplementedError
 
 
-def get_average_potential_from_cube(cube_path: PathLike, axis: int = 2) -> np.ndarray:
+def _get_bulk_site_potentials_aims(bulk_path: PathLike, **kwargs):
     """
-    Get the planar-averaged electrostatic potential along ``axis`` from an
-    FHI-aims potential cube file.
-
-    Mirrors ``Locpot.get_average_along_axis`` (used by
-    ``doped.utils.parsing._get_bulk_locpot_dict``), for a Freysoldt
-    (FNV)-style charge correction. Requires ``get_potential_cube`` and
-    ``output cube total_potential``/``hartree_potential`` to have been
-    requested in ``control.in``. An alternative to
-    ``get_core_level_shift``/``get_mulliken_charges_from_aims_output`` for
-    potential alignment -- not clear yet which approach(es) we want to
-    support first.
-    """
-    raise NotImplementedError
-
-
-def _get_bulk_site_potentials_aims(
-    bulk_path: PathLike, method: str = "core_level_shift", **kwargs
-):
-    """
-    Orchestration wrapper mirroring
-    ``doped.utils.parsing._get_bulk_site_potentials``: get the reference
-    atomic-site potentials needed for the eFNV-style charge correction from
-    a bulk FHI-aims calculation, using either ``method="core_level_shift"``
-    (via ``get_core_level_shift``, needs ``output atom_proj_dos``) or
-    ``method="cube_potential"`` (via ``get_average_potential_from_cube``,
-    needs ``output cube total_potential``).
+    Orchestration wrapper: get the reference atomic-site potentials needed
+    for the eFNV-style charge correction from a bulk FHI-aims calculation,
+    via ``get_core_level_shift`` (needs ``output atom_proj_dos``).
     """
     raise NotImplementedError

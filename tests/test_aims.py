@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,17 @@ SETTINGS["AIMS_SPECIES_DIR"] = "~/Documents/fhi-aims.260331/species_defaults"
 
 from doped.generation import DefectsGenerator
 from doped.io.aims.inputs import DefectsSet, _resolve_species_defaults
+from doped.io.aims.outputs import (
+    get_aims_output,
+    get_atomic_magnetic_moments_from_aims_output,
+    get_hirshfeld_charges_from_aims_output,
+    get_magnetization_from_aims_output,
+    get_mulliken_charges_from_aims_output,
+    get_n_electrons_from_aims_output,
+    get_neutral_n_electrons,
+    spin_degeneracy_from_aims_output,
+    total_charge_from_aims_output,
+)
 from doped.utils.efficiency import Structure
 
 
@@ -99,3 +111,73 @@ class AimsTest(unittest.TestCase):
             for match in re.findall(r"^\s*initial_charge\s+([+-]?[0-9]+(?:\.[0-9]*)?)", geometry, re.MULTILINE)
         )
         assert geometry_initial_charge == control_charge
+
+
+class AimsOutputsTest(unittest.TestCase):
+
+    def setUp(self):
+        self.aims_output_path = Path(data_dir) / "aims" / "CdTe"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # non-spin-polarised calcs -> no warnings expected anyway
+            self.bulk_output = get_aims_output(self.aims_output_path / "CdTe_bulk" / "aims_gam" / "aims.out")
+            self.charged_outputs = {
+                charge: get_aims_output(
+                    self.aims_output_path / f"Cd_Te_+{charge}" / "aims_gam" / "aims.out"
+                )
+                for charge in (1, 2, 3, 4)
+            }
+
+    def test_get_aims_output(self):
+        """``get_aims_output`` returns an ``AimsStdout`` wrapping the parsed file."""
+        from pyfhiaims.outputs.stdout import AimsStdout
+
+        assert isinstance(self.bulk_output, AimsStdout)
+
+    def test_get_aims_output_file_not_found(self):
+        with self.assertRaises(FileNotFoundError):
+            get_aims_output(self.aims_output_path / "CdTe_bulk" / "aims_gam" / "not_a_real_file.out")
+
+    def test_get_n_electrons_from_aims_output(self):
+        """54-atom Cd27Te27 bulk cell: 27*48 + 27*52 = 2700 electrons."""
+        assert get_n_electrons_from_aims_output(self.bulk_output) == 2700
+        # Cd_Te antisite (Cd on Te site) with charge +1: one fewer Te, one more Cd, plus +1 charge:
+        assert get_n_electrons_from_aims_output(self.charged_outputs[1]) == 2700 - 4 - 1
+
+    def test_get_neutral_n_electrons(self):
+        structure = self.bulk_output.get_image(-1).geometry.structure
+        assert get_neutral_n_electrons(structure) == 2700
+        charged_structure = self.charged_outputs[1].get_image(-1).geometry.structure
+        assert get_neutral_n_electrons(charged_structure) == 2700 - 4  # Cd27+1Te27-1, neutral electron count
+
+    def test_total_charge_from_aims_output(self):
+        assert total_charge_from_aims_output(self.bulk_output) == 0
+        for charge, aims_output in self.charged_outputs.items():
+            assert total_charge_from_aims_output(aims_output) == charge
+
+    def test_get_magnetization_from_aims_output(self):
+        """All CdTe test outputs are non-spin-polarised, so magnetization is zero."""
+        assert get_magnetization_from_aims_output(self.bulk_output) == 0.0
+        for aims_output in self.charged_outputs.values():
+            assert get_magnetization_from_aims_output(aims_output) == 0.0
+
+    def test_spin_degeneracy_from_aims_output(self):
+        # bulk: even (2700) electrons, zero magnetization -> singlet:
+        assert spin_degeneracy_from_aims_output(self.bulk_output) == 1
+        # Cd_Te_+1: odd (2695) electrons -> doublet:
+        assert spin_degeneracy_from_aims_output(self.charged_outputs[1]) == 2
+        # explicit charge_state overrides the auto-determined electron count:
+        assert spin_degeneracy_from_aims_output(self.bulk_output, charge_state=1) == 2
+        assert spin_degeneracy_from_aims_output(self.bulk_output, charge_state=0) == 1
+
+    def test_get_atomic_magnetic_moments_from_aims_output_requires_mulliken(self):
+        """None of the CdTe test outputs have ``output mulliken`` results parsed."""
+        with self.assertRaises(KeyError):
+            get_atomic_magnetic_moments_from_aims_output(self.bulk_output)
+
+    def test_get_mulliken_charges_from_aims_output_requires_mulliken(self):
+        with self.assertRaises(KeyError):
+            get_mulliken_charges_from_aims_output(self.bulk_output)
+
+    def test_get_hirshfeld_charges_from_aims_output_requires_hirshfeld(self):
+        with self.assertRaises(KeyError):
+            get_hirshfeld_charges_from_aims_output(self.bulk_output)

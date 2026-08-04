@@ -33,7 +33,33 @@ AIMS_PATH_SEARCHED = False
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_kpoints_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "KpointsSet.yaml"))
+default_defect_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_DefectSet.yaml"))
 GAMMA_KPOINTS_SETTINGS = {"k_grid": (1, 1, 1)}
+
+
+def _with_default_defect_set(user_parameters: dict[str, Any] | None) -> dict[str, Any]:
+    r"""
+    Merge ``user_parameters`` with the default ``control.in`` parameters in
+    ``doped/io/aims/AIMS_sets/AIMS_DefectSet.yaml``.
+
+    This requests the FHI-aims ``output`` flags required by the parsing functions in
+    ``doped.io.aims.outputs`` (e.g. ``output mulliken``, ``output hirshfeld``,
+    ``output atom_proj_dos ...``; see ``AIMS_DefectSet.yaml`` for full details/rationale),
+    so that the necessary raw outputs are available for later parsing/charge corrections,
+    without the user having to set these manually.
+
+    ``user_parameters`` takes priority over the defaults for any overlapping keys, except
+    ``output``, for which the user-specified and default ``output`` lines are combined (so
+    that any user-requested outputs supplement, rather than replace, the required defaults).
+    """
+    user_parameters = user_parameters or {}
+    merged_parameters = copy.deepcopy(default_defect_set)
+    merged_parameters.update(user_parameters)
+    merged_parameters["output"] = list(
+        dict.fromkeys([*default_defect_set.get("output", []), *user_parameters.get("output", [])])
+    )
+    return merged_parameters
+
 
 r"""
 Lazily infer the AIMS species-defaults directory if AIMS_SPECIES_DIR is not set.
@@ -374,7 +400,13 @@ class DefectRelaxSet(MSONable):
                 Charge state of the defect. Overrides
                 ``DefectEntry.charge_state`` if ``DefectEntry`` is input.
             user_parameters (dict[str, Any]):
-
+                Dictionary of FHI-aims ``control.in`` parameters (in the
+                ``pyfhiaims``/``ase``-style ``AimsControl`` format, e.g.
+                ``{"xc": "pbe", "output": ["mulliken"]}``), to override the
+                ``doped`` defaults. See ``doped/io/aims/AIMS_sets/AIMS_DefectSet.yaml``
+                for the default ``output`` flags requested (needed for the parsing
+                functions in ``doped.io.aims.outputs``); any ``output`` entries given
+                here are added to (rather than replacing) these required defaults.
             user_properties (Sequence[str]):
 
             user_kpoints_settings (dict[str, Any]):
@@ -399,7 +431,7 @@ class DefectRelaxSet(MSONable):
         self.charge_state = (
             charge_state if charge_state is not None else getattr(defect_entry, "charge_state", 0)
         )
-        self.user_parameters = copy.deepcopy(user_parameters) if user_parameters else {}
+        self.user_parameters = _with_default_defect_set(user_parameters)
         self.user_properties = user_properties or ("energy", "free_energy")
         self.user_kpoints_settings = (
             copy.deepcopy(user_kpoints_settings) if user_kpoints_settings else dict(default_kpoints_set)
@@ -436,7 +468,6 @@ class DefectRelaxSet(MSONable):
             self.user_parameters["charge"] = int(self.charge_state)
         except Exception:
             self.user_parameters["charge"] = self.charge_state
-        #TODO probably need some required properties in user_properties in order to get the info needed for parsing
 
     @property
     def aims_gam(self) -> DopedAimsInputSet:
