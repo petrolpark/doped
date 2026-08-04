@@ -67,7 +67,6 @@ analysis = [
     #"CarrierCapture.jl"
 ]
 aims = [
-    "pymatgen-io-aims",  # TODO remove dependency on pre-alpha package
     "pyfhiaims",
 ]
 

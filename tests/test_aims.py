@@ -13,7 +13,7 @@ from test_utils import EXAMPLE_DIR, data_dir
 SETTINGS["AIMS_SPECIES_DIR"] = "~/Documents/fhi-aims.260331/species_defaults"
 
 from doped.generation import DefectsGenerator
-from doped.io.aims.inputs import AimsDefectsSet, _resolve_species_defaults
+from doped.io.aims.inputs import DefectsSet, _resolve_species_defaults
 from doped.utils.efficiency import Structure
 
 
@@ -40,7 +40,7 @@ class AimsTest(unittest.TestCase):
         output_path = self.aims_output_path / "CdTe"
         os.makedirs(output_path, exist_ok=True)
 
-        defects_set = AimsDefectsSet(
+        defects_set = DefectsSet(
             defect_generator,
             user_parameters={"xc": "pbe"},
             species_defaults="light",
