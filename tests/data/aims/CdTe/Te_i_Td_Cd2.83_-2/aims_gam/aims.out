@@ -118,12 +118,12 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
 
 
 
-  Date     :  20260722, Time     :  165520.434
-  Time zero on CPU 1             :   0.115794800000000E+01  s.
-  Internal wall clock time zero  :           553971320.434  s.
+  Date     :  20260804, Time     :  132454.940
+  Time zero on CPU 1             :   0.115838100000000E+01  s.
+  Internal wall clock time zero  :           555081894.940  s.
 
   FHI-aims created a unique identifier for this run for later identification
-  aims_uuid : AE780C42-5E83-4717-A558-6AC31FFC2457
+  aims_uuid : 6D2D5E82-0C63-4696-A0F2-40421F5937EB
 
   Build configuration of the current instance of FHI-aims
   -------------------------------------------------------
@@ -155,82 +155,82 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
                    /usr/local/Cluster-Apps/intel/2020.4/compilers_and_libraries_2020.4.304/linux/mkl/lib/intel64_lin/libmkl_scalapack_lp64.so
 
   Using       76 parallel tasks.
-  Task        0 on host cpu-q-494 reporting.
-  Task        1 on host cpu-q-494 reporting.
-  Task        2 on host cpu-q-494 reporting.
-  Task        3 on host cpu-q-494 reporting.
-  Task        4 on host cpu-q-494 reporting.
-  Task        5 on host cpu-q-494 reporting.
-  Task        6 on host cpu-q-494 reporting.
-  Task        7 on host cpu-q-494 reporting.
-  Task        8 on host cpu-q-494 reporting.
-  Task        9 on host cpu-q-494 reporting.
-  Task       10 on host cpu-q-494 reporting.
-  Task       11 on host cpu-q-494 reporting.
-  Task       12 on host cpu-q-494 reporting.
-  Task       13 on host cpu-q-494 reporting.
-  Task       14 on host cpu-q-494 reporting.
-  Task       15 on host cpu-q-494 reporting.
-  Task       16 on host cpu-q-494 reporting.
-  Task       17 on host cpu-q-494 reporting.
-  Task       18 on host cpu-q-494 reporting.
-  Task       19 on host cpu-q-494 reporting.
-  Task       20 on host cpu-q-494 reporting.
-  Task       21 on host cpu-q-494 reporting.
-  Task       22 on host cpu-q-494 reporting.
-  Task       23 on host cpu-q-494 reporting.
-  Task       24 on host cpu-q-494 reporting.
-  Task       25 on host cpu-q-494 reporting.
-  Task       26 on host cpu-q-494 reporting.
-  Task       27 on host cpu-q-494 reporting.
-  Task       28 on host cpu-q-494 reporting.
-  Task       29 on host cpu-q-494 reporting.
-  Task       30 on host cpu-q-494 reporting.
-  Task       31 on host cpu-q-494 reporting.
-  Task       32 on host cpu-q-494 reporting.
-  Task       33 on host cpu-q-494 reporting.
-  Task       34 on host cpu-q-494 reporting.
-  Task       35 on host cpu-q-494 reporting.
-  Task       36 on host cpu-q-494 reporting.
-  Task       37 on host cpu-q-494 reporting.
-  Task       38 on host cpu-q-494 reporting.
-  Task       39 on host cpu-q-494 reporting.
-  Task       40 on host cpu-q-494 reporting.
-  Task       41 on host cpu-q-494 reporting.
-  Task       42 on host cpu-q-494 reporting.
-  Task       43 on host cpu-q-494 reporting.
-  Task       44 on host cpu-q-494 reporting.
-  Task       45 on host cpu-q-494 reporting.
-  Task       46 on host cpu-q-494 reporting.
-  Task       47 on host cpu-q-494 reporting.
-  Task       48 on host cpu-q-494 reporting.
-  Task       49 on host cpu-q-494 reporting.
-  Task       50 on host cpu-q-494 reporting.
-  Task       51 on host cpu-q-494 reporting.
-  Task       52 on host cpu-q-494 reporting.
-  Task       53 on host cpu-q-494 reporting.
-  Task       54 on host cpu-q-494 reporting.
-  Task       55 on host cpu-q-494 reporting.
-  Task       56 on host cpu-q-494 reporting.
-  Task       57 on host cpu-q-494 reporting.
-  Task       58 on host cpu-q-494 reporting.
-  Task       59 on host cpu-q-494 reporting.
-  Task       60 on host cpu-q-494 reporting.
-  Task       61 on host cpu-q-494 reporting.
-  Task       62 on host cpu-q-494 reporting.
-  Task       63 on host cpu-q-494 reporting.
-  Task       64 on host cpu-q-494 reporting.
-  Task       65 on host cpu-q-494 reporting.
-  Task       66 on host cpu-q-494 reporting.
-  Task       67 on host cpu-q-494 reporting.
-  Task       68 on host cpu-q-494 reporting.
-  Task       69 on host cpu-q-494 reporting.
-  Task       70 on host cpu-q-494 reporting.
-  Task       71 on host cpu-q-494 reporting.
-  Task       72 on host cpu-q-494 reporting.
-  Task       73 on host cpu-q-494 reporting.
-  Task       74 on host cpu-q-494 reporting.
-  Task       75 on host cpu-q-494 reporting.
+  Task        0 on host cpu-q-215 reporting.
+  Task        1 on host cpu-q-215 reporting.
+  Task        2 on host cpu-q-215 reporting.
+  Task        3 on host cpu-q-215 reporting.
+  Task        4 on host cpu-q-215 reporting.
+  Task        5 on host cpu-q-215 reporting.
+  Task        6 on host cpu-q-215 reporting.
+  Task        7 on host cpu-q-215 reporting.
+  Task        8 on host cpu-q-215 reporting.
+  Task        9 on host cpu-q-215 reporting.
+  Task       10 on host cpu-q-215 reporting.
+  Task       11 on host cpu-q-215 reporting.
+  Task       12 on host cpu-q-215 reporting.
+  Task       13 on host cpu-q-215 reporting.
+  Task       14 on host cpu-q-215 reporting.
+  Task       15 on host cpu-q-215 reporting.
+  Task       16 on host cpu-q-215 reporting.
+  Task       17 on host cpu-q-215 reporting.
+  Task       18 on host cpu-q-215 reporting.
+  Task       19 on host cpu-q-215 reporting.
+  Task       20 on host cpu-q-215 reporting.
+  Task       21 on host cpu-q-215 reporting.
+  Task       22 on host cpu-q-215 reporting.
+  Task       23 on host cpu-q-215 reporting.
+  Task       24 on host cpu-q-215 reporting.
+  Task       25 on host cpu-q-215 reporting.
+  Task       26 on host cpu-q-215 reporting.
+  Task       27 on host cpu-q-215 reporting.
+  Task       28 on host cpu-q-215 reporting.
+  Task       29 on host cpu-q-215 reporting.
+  Task       30 on host cpu-q-215 reporting.
+  Task       31 on host cpu-q-215 reporting.
+  Task       32 on host cpu-q-215 reporting.
+  Task       33 on host cpu-q-215 reporting.
+  Task       34 on host cpu-q-215 reporting.
+  Task       35 on host cpu-q-215 reporting.
+  Task       36 on host cpu-q-215 reporting.
+  Task       37 on host cpu-q-215 reporting.
+  Task       38 on host cpu-q-215 reporting.
+  Task       39 on host cpu-q-215 reporting.
+  Task       40 on host cpu-q-215 reporting.
+  Task       41 on host cpu-q-215 reporting.
+  Task       42 on host cpu-q-215 reporting.
+  Task       43 on host cpu-q-215 reporting.
+  Task       44 on host cpu-q-215 reporting.
+  Task       45 on host cpu-q-215 reporting.
+  Task       46 on host cpu-q-215 reporting.
+  Task       47 on host cpu-q-215 reporting.
+  Task       48 on host cpu-q-215 reporting.
+  Task       49 on host cpu-q-215 reporting.
+  Task       50 on host cpu-q-215 reporting.
+  Task       51 on host cpu-q-215 reporting.
+  Task       52 on host cpu-q-215 reporting.
+  Task       53 on host cpu-q-215 reporting.
+  Task       54 on host cpu-q-215 reporting.
+  Task       55 on host cpu-q-215 reporting.
+  Task       56 on host cpu-q-215 reporting.
+  Task       57 on host cpu-q-215 reporting.
+  Task       58 on host cpu-q-215 reporting.
+  Task       59 on host cpu-q-215 reporting.
+  Task       60 on host cpu-q-215 reporting.
+  Task       61 on host cpu-q-215 reporting.
+  Task       62 on host cpu-q-215 reporting.
+  Task       63 on host cpu-q-215 reporting.
+  Task       64 on host cpu-q-215 reporting.
+  Task       65 on host cpu-q-215 reporting.
+  Task       66 on host cpu-q-215 reporting.
+  Task       67 on host cpu-q-215 reporting.
+  Task       68 on host cpu-q-215 reporting.
+  Task       69 on host cpu-q-215 reporting.
+  Task       70 on host cpu-q-215 reporting.
+  Task       71 on host cpu-q-215 reporting.
+  Task       72 on host cpu-q-215 reporting.
+  Task       73 on host cpu-q-215 reporting.
+  Task       74 on host cpu-q-215 reporting.
+  Task       75 on host cpu-q-215 reporting.
 
   Obtaining array dimensions for all initial allocations:
   
@@ -242,13 +242,17 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   -----------------------------------------------------------------------
   
   #===============================================================================
-  # FHI-aims geometry file: ./geometry.in
-  # File generated from pymatgen
-  # Mon Jul 13 13:24:49 2026
+  # FHI-aims control file: control.in
+  # File generated by doped
+  # Tue Aug  4 11:31:54 2026
   #===============================================================================
+  
   xc                                                pbe
   charge                                            -2
   k_grid                                            1 1 1
+  output                                            mulliken
+  output                                            hirshfeld
+  output                                            atom_proj_dos -20 5 2000 0.01
   #===============================================================================
   
   ################################################################################
@@ -413,9 +417,10 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   
   #===============================================================================
   # FHI-aims geometry file: geometry.in
-  # File generated from pymatgen
-  # Mon Jul 13 13:24:49 2026
+  # File generated by doped
+  # Tue Aug  4 11:31:54 2026
   #===============================================================================
+  
   lattice_vector 0.000000000000000e+00 9.810977999999999e+00 9.810977999999999e+00
   lattice_vector 9.810977999999999e+00 0.000000000000000e+00 9.810977999999999e+00
   lattice_vector 9.810977999999999e+00 9.810977999999999e+00 0.000000000000000e+00
@@ -509,6 +514,12 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   XC: Using PBE gradient-corrected functionals.
   Charged system requested: Charge =  -0.200000E+01.
   Found k-point grid:         1         1         1
+  Mulliken charge analysis will be performed and summarised to the main output.
+  Full Mulliken charge analysis will be written to file 'Mulliken.out'.
+  Hirshfeld charge analysis will be performed.
+  Calculating atom-projected density of states with
+  | energy interval :-20.000000  5.000000
+  | points & broadening :  2000  0.010000
  
   Reading configuration options for species Te                  .
   | Found nuclear charge :  52.0000
@@ -989,7 +1000,7 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
  * that led to extremely long run times, e.g., for simple relaxation.
  * We now preset a default value for sc_accuracy_rho if it is not set.
  * You may still wish to check if this setting is too tight or too loose for your needs.
- * Based on n_atoms and forces and force-correction status, FHI-aims chose sc_accuracy_rho =  0.242212E-04 .
+ * Based on n_atoms and forces and force-correction status, FHI-aims chose sc_accuracy_rho =  0.302765E-05 .
   No accuracy limit for integral partition fn. given. Defaulting to  0.1000E-14.
   No threshold value for u(r) in integrations given. Defaulting to  0.1000E-05.
   No occupation type (smearing scheme) given. Defaulting to Gaussian broadening, width =  0.1000E-01 eV.
@@ -1022,6 +1033,7 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   Using packed matrix style: index .
   Threshold of packed matrixes:  0.000000E+00
   Defaulting to use time-reversal symmetry for k-point grid.
+  The projected DOS plots are based on Mulliken analysis.
   Charge integration errors on the 3D integration grid will be compensated
   by explicit normalization and distribution of residual charges.
   Use the "compensate_multipole_errors" flag to change this behaviour.
@@ -1064,7 +1076,7 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   * and seems sensible.
 
   | Checks passed.
-  After read_input_data [GB]:    250.11
+  After read_input_data [GB]:    249.41
 
   Performing system and environment tests:
   | Environment variable OMP_NUM_THREADS correctly set to 1.
@@ -1077,7 +1089,7 @@ MPI startup(): Warning: I_MPI_PMI_LIBRARY will be ignored since the hydra proces
   | Running on : Intel(R) Xeon(R) Platinum 8368Q CPU @ 2.60GHz
   | Runtime CPU compatibility verified.
   
-  After prepare_system [GB]:    250.00
+  After prepare_system [GB]:    249.30
 
 ------------------------------------------------------------
           Preparing all fixed parts of the calculation.
