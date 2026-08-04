@@ -8,5 +8,5 @@ output:
     # (a cheap potential-alignment reference, an alternative to the core-level-shift approach below)
   - atom_proj_dos -20 5 2000 0.01  # atom-projected density of states (energy window/broadening
     # can be overridden via `user_parameters`), needed for get_atom_projected_dos and
-    # get_core_level_shift (core-level-shift-based potential alignment,
-    # `_get_bulk_site_potentials_aims(method="core_level_shift")`)
+    # get_core_level_eigenvalue (core-level-eigenvalue-based potential alignment via
+    # `get_site_potentials`, for the eFNV charge correction)

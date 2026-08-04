@@ -2,12 +2,16 @@
 Parsing of FHI-aims defect / bulk supercell calculation outputs.
 
 These functions load and process FHI-aims output files (``aims.out``, and --
-for charge corrections, not yet implemented -- ``atom_proj_dos`` files), and
-can provide the parsed outputs in calculator-agnostic form
+for eFNV charge corrections -- ``atom_proj_dos`` files), and can provide the
+parsed outputs in calculator-agnostic form
 (:class:`~doped.io.outputs.CalculationOutputs`) via :func:`get_calculation_outputs`.
 """
 
+import re
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 from pyfhiaims.outputs.stdout import AimsStdout
 from pymatgen.core.structure import Structure
 from pymatgen.util.typing import PathLike
@@ -103,19 +107,85 @@ def get_aims_output(aims_out_path: PathLike, **kwargs) -> AimsStdout:
         ) from exc
 
 
-def get_atom_projected_dos(atom_proj_dos_dir: PathLike, atom_index: int, **kwargs):
-    """
-    Parse the ``atom_proj_dos_<Species><index>.dat`` file for a given atom
-    (output by FHI-aims when ``output atom_proj_dos`` is set in
-    ``control.in``).
+_ATOM_PROJ_DOS_RE = re.compile(r"^atom_proj_dos_[A-Za-z]+(\d+)(_raw)?\.dat$")
+"""
+Matches FHI-aims ``atom_proj_dos_<Species><index>(_raw).dat`` filenames,
+capturing the (1-indexed) atom index and whether it is the ``_raw`` variant.
 
-    Needed for core-level-shift-based potential alignment (see
-    ``get_core_level_shift``) -- not currently parsed by ``pyfhiaims`` at all
-    (only the ``aims.out`` stdout is parsed, via ``AimsStdout``; the
-    ``atom_proj_dos_*.dat`` files are separate output files that would need
-    their own reader).
+Assumes species symbols contain only letters (standard element symbols),
+matching all observed FHI-aims output; species names with trailing digits
+would be ambiguous with the atom index and are not supported.
+"""
+
+
+def _find_atom_proj_dos_file(atom_proj_dos_dir: PathLike, atom_index: int, raw: bool) -> Path:
     """
-    raise NotImplementedError
+    Locate the ``atom_proj_dos_<Species><atom_index>(_raw).dat`` file for
+    ``atom_index`` (1-indexed, matching FHI-aims' ``geometry.in`` atom
+    ordering) in ``atom_proj_dos_dir``.
+    """
+    atom_proj_dos_dir = Path(atom_proj_dos_dir)
+    matches = [
+        f
+        for f in atom_proj_dos_dir.iterdir()
+        if (match := _ATOM_PROJ_DOS_RE.match(f.name))
+        and int(match.group(1)) == atom_index
+        and bool(match.group(2)) == raw
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"No `atom_proj_dos_<Species>{atom_index}{'_raw' if raw else ''}.dat` file found in "
+            f"{atom_proj_dos_dir} (`output atom_proj_dos` must be set in `control.in`)."
+        )
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple `atom_proj_dos` files found for atom index {atom_index} (raw={raw}) in "
+            f"{atom_proj_dos_dir}: {matches}"
+        )
+    return matches[0]
+
+
+def get_atom_projected_dos(atom_proj_dos_dir: PathLike, atom_index: int, raw: bool = True, **kwargs) -> pd.DataFrame:
+    """
+    Parse the ``atom_proj_dos_<Species><index>(_raw).dat`` file for a given
+    atom (output by FHI-aims when ``output atom_proj_dos`` is set in
+    ``control.in``; see ``AIMS_DefectSet.yaml``).
+
+    Needed for core-level-based potential alignment (see
+    ``get_core_level_eigenvalue``/``get_site_potentials``).
+
+    FHI-aims writes two energy references per atom: the plain file is
+    referenced to the chemical potential (Fermi level/VBM), while the
+    ``_raw`` file is referenced to the internal zero (vacuum level for
+    non-periodic systems, or the G=0 component of the long-range Hartree
+    potential for periodic systems). The ``_raw`` reference is shared by
+    both bulk and defect supercell calculations, so is the one used for
+    potential alignment (``raw=True``, the default).
+
+    Args:
+        atom_proj_dos_dir (PathLike):
+            Directory containing the ``atom_proj_dos_*.dat`` files (e.g. the
+            ``aims_std``/``aims_gam`` calculation subfolder).
+        atom_index (int):
+            1-indexed atom number, matching the atom ordering in
+            ``geometry.in`` (and thus the ``<index>`` in the
+            ``atom_proj_dos_<Species><index>.dat`` filename).
+        raw (bool):
+            Whether to parse the ``_raw`` (internal-zero-referenced) or
+            plain (chemical-potential-referenced) file. Default: ``True``.
+        **kwargs:
+            Additional keyword arguments (currently unused).
+
+    Returns:
+        pd.DataFrame: Columns ``"energy"`` (eV) and ``"total"``, plus one
+        column per angular-momentum channel present in the file (``"l0"``
+        for l=0/s, ``"l1"`` for l=1/p, etc).
+    """
+    dos_file = _find_atom_proj_dos_file(atom_proj_dos_dir, atom_index, raw=raw)
+    dos = pd.read_csv(dos_file, comment="#", sep=r"\s+", header=None)
+    n_l_channels = dos.shape[1] - 2
+    dos.columns = ["energy", "total", *(f"l{l_num}" for l_num in range(n_l_channels))]
+    return dos
 
 
 def get_n_electrons_from_aims_output(aims_output: AimsStdout) -> int:
@@ -226,38 +296,221 @@ def get_hirshfeld_charges_from_aims_output(aims_output: AimsStdout) -> np.ndarra
     return np.array(aims_output.get_image(-1).results["hirshfeld_charges"])
 
 
-def get_core_level_shift(
-    defect_atom_proj_dos_dir: PathLike,
-    bulk_atom_proj_dos_dir: PathLike,
+_L_LETTER_TO_INT = {"s": 0, "p": 1, "d": 2, "f": 3, "g": 4, "h": 5}
+
+
+def _l_from_core_level(core_level: str) -> int:
+    """
+    Get the angular momentum quantum number corresponding to ``core_level``
+    (e.g. ``"s"``, ``"1s"``, ``"2p"`` -> 0, 0, 1 respectively).
+
+    ``atom_proj_dos`` files only resolve the DOS by angular momentum, not by
+    principal quantum number, so only the trailing letter of ``core_level``
+    is used; any leading digit is ignored.
+    """
+    letter = core_level.strip()[-1].lower()
+    try:
+        return _L_LETTER_TO_INT[letter]
+    except KeyError:
+        raise ValueError(
+            f"Unrecognised angular-momentum letter '{letter}' in `core_level='{core_level}'` -- "
+            f"expected one of {sorted(_L_LETTER_TO_INT)}."
+        ) from None
+
+
+def _lowest_energy_peak(energy: np.ndarray, dos: np.ndarray, min_relative_height: float = 0.1) -> float:
+    """
+    Get the energy of the lowest-energy (most negative) resolvable local
+    maximum in ``dos(energy)``, used to locate the core-like state in an
+    angular-momentum-resolved ``atom_proj_dos`` channel.
+
+    A local maximum is only considered "resolvable" if its height exceeds
+    ``min_relative_height`` times the maximum DOS value in the channel, to
+    exclude numerical noise/shoulders on the tails of broader (valence/
+    conduction) bands. ``energy`` is assumed sorted in ascending order (as
+    written by FHI-aims).
+    """
+    if len(dos) < 3:
+        raise ValueError("`atom_proj_dos` array is too short to locate a peak.")
+    threshold = min_relative_height * np.max(dos)
+    is_local_max = (dos[1:-1] > dos[:-2]) & (dos[1:-1] > dos[2:]) & (dos[1:-1] > threshold)
+    peak_indices = np.flatnonzero(is_local_max) + 1
+    if len(peak_indices) == 0:
+        raise ValueError(
+            "No resolvable peak found in the requested `atom_proj_dos` angular-momentum channel "
+            "above `min_relative_height`; try lowering `min_relative_height`, or check that the "
+            "`atom_proj_dos` energy window/`core_level` are appropriate for this atom."
+        )
+    return float(energy[peak_indices[0]])
+
+
+def get_core_level_eigenvalue(
+    atom_proj_dos_dir: PathLike,
     atom_index: int,
-    core_level: str = "1s",
+    core_level: str = "s",
+    min_relative_height: float = 0.1,
 ) -> float:
     r"""
-    Get the core-level shift for a given atom, for use in potential
-    alignment (the atomic-site-potential analog for FHI-aims defect
-    calculations).
+    Get the core-level eigenvalue for a given atom in a single FHI-aims
+    calculation (bulk or defect supercell), for use in potential alignment
+    (the FHI-aims analog of VASP's atomic-site potentials from ``OUTCAR``;
+    see ``get_site_potentials``).
 
     Per the FHI-aims manual (Section 4.11, "Formation energies of charged
     defects"), potential alignment for charged-defect formation energies
     should align on the shift in core-state eigenvalues of an atom far from
-    the defect, between the defect and (equivalent) bulk calculations,
-    since FHI-aims is all-electron and so has no averaged core potential to
-    align on instead:
+    the defect, between the defect and (equivalent) bulk calculations, since
+    FHI-aims is all-electron and so has no averaged core potential to align
+    on instead. As FHI-aims does not directly print core-state eigenvalues,
+    this is obtained from the atom-projected density of states
+    (``get_atom_projected_dos``, using the internal-zero-referenced ``_raw``
+    file), by locating the lowest-energy resolvable peak in the
+    ``core_level`` angular-momentum channel (see ``_l_from_core_level`` --
+    ``atom_proj_dos`` only resolves the DOS by angular momentum, not
+    principal quantum number).
 
-    ``core_level_shift = (defect_core_eigenvalue - defect_VBM) -
-    (bulk_core_eigenvalue - bulk_VBM)``
+    Note that no VBM referencing is applied here, unlike the naive
+    alignment formula given in the FHI-aims manual (``core_level_shift =
+    (defect_core_eigenvalue - defect_VBM) - (bulk_core_eigenvalue -
+    bulk_VBM)``); the returned eigenvalue is on the internal-zero (``_raw``)
+    reference, which is common to bulk and defect supercell calculations
+    (unlike the VBM, which shifts with charge state/supercell), so the
+    defect-bulk difference computed generically in ``doped.corrections``
+    already gives the correct potential shift without it.
 
-    Uses ``get_atom_projected_dos`` to obtain the core-state eigenvalue for
-    ``atom_index`` in each calculation (matching ``core_level``, e.g.
-    ``"1s"``).
+    Args:
+        atom_proj_dos_dir (PathLike):
+            Directory containing the ``atom_proj_dos_*.dat`` files for this
+            calculation (e.g. the ``aims_std``/``aims_gam`` calculation
+            subfolder).
+        atom_index (int):
+            1-indexed atom number, matching the atom ordering in
+            ``geometry.in``.
+        core_level (str):
+            Angular-momentum channel to search, given by its trailing
+            letter (e.g. ``"s"``, ``"1s"``, ``"2p"``). Default: ``"s"``.
+        min_relative_height (float):
+            Minimum peak height, as a fraction of the maximum DOS value in
+            the chosen channel, to be considered a resolvable peak (see
+            ``_lowest_energy_peak``). Default: 0.1.
+
+    Returns:
+        float: The core-level eigenvalue (eV), referenced to the internal
+        zero (vacuum level / G=0 Hartree potential component).
     """
-    raise NotImplementedError
+    l_num = _l_from_core_level(core_level)
+    dos = get_atom_projected_dos(atom_proj_dos_dir, atom_index, raw=True)
+    column = f"l{l_num}"
+    if column not in dos.columns:
+        available = [c for c in dos.columns if c.startswith("l")]
+        raise ValueError(
+            f"Angular momentum channel l={l_num} (from `core_level='{core_level}'`) not present "
+            f"in the `atom_proj_dos` file for atom {atom_index} in {atom_proj_dos_dir}; available "
+            f"channels: {available}."
+        )
+    return _lowest_energy_peak(
+        dos["energy"].to_numpy(), dos[column].to_numpy(), min_relative_height=min_relative_height
+    )
 
 
-def _get_bulk_site_potentials_aims(bulk_path: PathLike, **kwargs):
+SITE_POTENTIALS_FILE = "atom_proj_dos"
+"""
+Substring identifying (FHI-aims) atom-projected DOS files, used generically
+by ``doped.analysis`` to check for the presence of eFNV charge-correction
+data, and in informative warning/error messages.
+
+Part of the ``doped.io`` backend protocol.
+"""
+
+
+def get_site_potentials(
+    path: PathLike,
+    dir_type: str = "bulk",
+    quiet: bool = False,
+    outputs: CalculationOutputs | None = None,
+    total_energy: list | float | None = None,
+    core_level: str = "s",
+    min_relative_height: float = 0.1,
+    **kwargs,
+) -> np.ndarray:
     """
-    Orchestration wrapper: get the reference atomic-site potentials needed
-    for the eFNV-style charge correction from a bulk FHI-aims calculation,
-    via ``get_core_level_shift`` (needs ``output atom_proj_dos``).
+    Get the atomic-site electrostatic potentials for the FHI-aims
+    calculation in ``path``, needed for Kumagai (eFNV) finite-size charge
+    corrections.
+
+    FHI-aims is an all-electron code with no averaged core potential to
+    align on directly, so the site potentials are instead obtained from the
+    atomic core-level eigenvalues, located via the atom-projected DOS (see
+    ``get_core_level_eigenvalue`` and the FHI-aims manual, Section 4.11).
+    The core eigenvalues are read from the ``_raw`` (internal-zero-
+    referenced) ``atom_proj_dos`` files, since that reference is common to
+    both the bulk and defect supercell calculations (unlike, e.g., the VBM,
+    which shifts with charge state/supercell -- no VBM referencing is used
+    here). As with the analogous VASP function (``-1 *`` the ``OUTCAR`` core
+    potentials), the returned potentials are the negative of the core
+    eigenvalues, so that ``defect_site_potentials - bulk_site_potentials``
+    (computed generically in ``doped.corrections``) has the correct sign
+    for the eFNV correction.
+
+    ``path`` should be the exact calculation directory containing the
+    ``atom_proj_dos_*.dat`` files (e.g. the ``aims_std``/``aims_gam``
+    subfolder), not (necessarily) its parent.
+
+    Part of the ``doped.io`` backend protocol.
+
+    Args:
+        path (PathLike):
+            Path to the FHI-aims calculation directory for which to compute
+            the atomic-site potentials.
+        dir_type (str):
+            Type of directory being parsed (``"bulk"`` or ``"defect"``), for
+            informative warnings/errors. Default: ``"bulk"``.
+        quiet (bool):
+            Currently unused for FHI-aims (accepted to match the generic
+            ``doped.io`` backend protocol).
+        outputs (CalculationOutputs):
+            Parsed calculation outputs, if already available; used to get
+            the number of atoms directly from ``outputs.structure`` rather
+            than inferring it from the number of ``atom_proj_dos`` files
+            found in ``path`` (relevant if ``atom_proj_dos`` was only
+            requested for a subset of atoms).
+        total_energy (list | float):
+            Not currently used for FHI-aims (accepted to match the generic
+            ``doped.io`` backend protocol).
+        core_level (str):
+            Angular-momentum channel to search for the core-like peak in
+            each atom's projected DOS (see ``get_core_level_eigenvalue``).
+            Default: ``"s"``.
+        min_relative_height (float):
+            Minimum peak height (relative to the channel maximum) for a
+            peak to be considered resolvable (see ``_lowest_energy_peak``).
+            Default: 0.1.
+        **kwargs:
+            Additional keyword arguments (currently unused).
+
+    Returns:
+        np.ndarray: The atomic-site electrostatic potentials (in eV), one
+        per site, ordered to match the sites of the corresponding structure.
     """
-    raise NotImplementedError
+    path = Path(path)
+    if outputs is not None and outputs.structure is not None:
+        n_atoms = len(outputs.structure)
+    else:
+        raw_dos_files = list(path.glob("atom_proj_dos_*_raw.dat"))
+        if not raw_dos_files:
+            raise FileNotFoundError(
+                f"No `atom_proj_dos_*_raw.dat` files found in {dir_type} directory {path}; these "
+                f"are required to compute atomic-site potentials for the eFNV charge correction "
+                f"with FHI-aims (`output atom_proj_dos` must be set in `control.in`)."
+            )
+        n_atoms = len(raw_dos_files)
+
+    return np.array(
+        [
+            -1
+            * get_core_level_eigenvalue(
+                path, atom_index, core_level=core_level, min_relative_height=min_relative_height
+            )
+            for atom_index in range(1, n_atoms + 1)
+        ]
+    )
