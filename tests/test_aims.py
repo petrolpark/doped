@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 from monty.serialization import loadfn
 from pymatgen.core import SETTINGS
 from test_utils import EXAMPLE_DIR, data_dir
@@ -16,16 +17,12 @@ SETTINGS["AIMS_SPECIES_DIR"] = "~/Documents/fhi-aims.260331/species_defaults"
 from doped.generation import DefectsGenerator
 from doped.io.aims.inputs import DefectsSet, _resolve_species_defaults
 from doped.io.aims.outputs import (
-    get_aims_output,
-    get_atomic_magnetic_moments_from_aims_output,
-    get_hirshfeld_charges_from_aims_output,
-    get_magnetization_from_aims_output,
-    get_mulliken_charges_from_aims_output,
-    get_n_electrons_from_aims_output,
-    get_neutral_n_electrons,
-    spin_degeneracy_from_aims_output,
-    total_charge_from_aims_output,
-)
+    get_aims_output, get_atomic_magnetic_moments_from_aims_output,
+    get_band_edge_eigenvalues_from_aims_output, get_calculation_outputs,
+    get_magnetization_from_aims_output, get_n_electrons_from_aims_output,
+    get_neutral_n_electrons, get_site_potentials,
+    spin_degeneracy_from_aims_output, total_charge_from_aims_output)
+from doped.io.outputs import CalculationOutputs
 from doped.utils.efficiency import Structure
 
 
@@ -117,14 +114,16 @@ class AimsOutputsTest(unittest.TestCase):
 
     def setUp(self):
         self.aims_output_path = Path(data_dir) / "aims" / "CdTe"
+        self.bulk_dir = self.aims_output_path / "CdTe_bulk" / "aims_gam"
+        self.charged_dirs = {
+            charge: self.aims_output_path / f"Cd_Te_+{charge}" / "aims_gam" for charge in (1, 2, 3, 4)
+        }
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # non-spin-polarised calcs -> no warnings expected anyway
-            self.bulk_output = get_aims_output(self.aims_output_path / "CdTe_bulk" / "aims_gam" / "aims.out")
+            self.bulk_output = get_aims_output(self.bulk_dir / "aims.out")
             self.charged_outputs = {
-                charge: get_aims_output(
-                    self.aims_output_path / f"Cd_Te_+{charge}" / "aims_gam" / "aims.out"
-                )
-                for charge in (1, 2, 3, 4)
+                charge: get_aims_output(charged_dir / "aims.out")
+                for charge, charged_dir in self.charged_dirs.items()
             }
 
     def test_get_aims_output(self):
@@ -174,10 +173,118 @@ class AimsOutputsTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             get_atomic_magnetic_moments_from_aims_output(self.bulk_output)
 
-    def test_get_mulliken_charges_from_aims_output_requires_mulliken(self):
-        with self.assertRaises(KeyError):
-            get_mulliken_charges_from_aims_output(self.bulk_output)
+    def test_get_band_edge_eigenvalues_from_aims_output(self):
+        assert np.allclose(
+            get_band_edge_eigenvalues_from_aims_output(self.bulk_output),
+            (-4.87610472, -4.22510898, 0.65099574),
+        )
+        # Cd_Te_+1/+3/+4 are (spuriously) flagged metallic by `aims` (defect state broadening
+        # closes the gap), while Cd_Te_+2 retains a resolved gap:
+        known_band_edges = {
+            1: (-4.89197007, -4.03259341, 0.0),
+            2: (-4.88423806, -4.02181037, 0.86242769),
+            3: (-4.91784489, -4.02287586, 0.0),
+            4: (-4.94692462, -4.02397834, 0.0),
+        }
+        for charge, aims_output in self.charged_outputs.items():
+            assert np.allclose(
+                get_band_edge_eigenvalues_from_aims_output(aims_output), known_band_edges[charge]
+            )
 
-    def test_get_hirshfeld_charges_from_aims_output_requires_hirshfeld(self):
-        with self.assertRaises(KeyError):
-            get_hirshfeld_charges_from_aims_output(self.bulk_output)
+    def test_get_calculation_outputs(self):
+        """
+        Test parsing an FHI-aims bulk supercell calculation to
+        ``CalculationOutputs``, checking the parsed fields against known
+        numerical values from the ``aims.out`` test file.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outputs = get_calculation_outputs(self.bulk_dir, label="bulk")
+
+        assert len(outputs.structure) == 54  # Cd27Te27 bulk supercell
+        assert np.isclose(outputs.energy, -9226741.70719699)
+        assert outputs.converged_electronic is True
+        assert np.isclose(outputs.efermi, -4.55060685)
+        assert outputs.nelect == 2700
+        assert outputs.charge == 0
+        assert outputs.magnetization == 0.0
+        assert outputs.spin_degeneracy() == 1
+        assert outputs.spin_degeneracy(charge_state=0) == 1
+        assert int(outputs.run_metadata["charge"]) == 0
+        assert outputs.run_metadata["num_electrons"] == 2700.0
+        assert np.isclose(outputs.vbm, -4.87610472)
+        assert np.isclose(outputs.cbm, -4.22510898)
+        assert np.isclose(outputs.band_gap, 0.65099574)
+
+    def test_get_calculation_outputs_charged_defect(self):
+        """
+        Test parsing charged Cd_Te antisite defect supercell calculations to
+        ``CalculationOutputs``, checking the parsed fields against known
+        numerical values from the ``aims.out`` test files.
+        """
+        known_energies = {
+            1: -9193276.22903702,
+            2: -9193272.18784907,
+            3: -9193267.31362098,
+            4: -9193262.39367238,
+        }
+        known_efermis = {
+            1: -4.0424661,
+            2: -4.45302422,
+            3: -4.88364145,
+            4: -4.9316963,
+        }
+        known_band_edges = {
+            1: (-4.89197007, -4.03259341, 0.0),
+            2: (-4.88423806, -4.02181037, 0.86242769),
+            3: (-4.91784489, -4.02287586, 0.0),
+            4: (-4.94692462, -4.02397834, 0.0),
+        }
+        for charge, charged_dir in self.charged_dirs.items():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                outputs = get_calculation_outputs(charged_dir, label="defect")
+
+            assert len(outputs.structure) == 54
+            assert np.isclose(outputs.energy, known_energies[charge])
+            assert outputs.converged_electronic is True
+            assert np.isclose(outputs.efermi, known_efermis[charge])
+            assert outputs.charge == charge
+            assert outputs.nelect == 2700 - 4 - charge  # one fewer Te, one more Cd, plus `charge`
+            assert outputs.magnetization == 0.0
+            assert outputs.spin_degeneracy() == (2 if (2700 - 4 - charge) % 2 else 1)
+            assert int(outputs.run_metadata["charge"]) == charge
+            assert np.allclose((outputs.vbm, outputs.cbm, outputs.band_gap), known_band_edges[charge])
+
+    def test_get_calculation_outputs_site_potentials(self):
+        """
+        Test that ``load_site_potentials=True`` populates ``site_potentials``
+        with the expected numerical values (needed for the eFNV charge
+        correction), matching ``get_site_potentials`` called directly on the
+        same directory.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outputs = get_calculation_outputs(self.bulk_dir, label="bulk", load_site_potentials=True)
+
+        assert len(outputs.site_potentials) == len(outputs.structure)
+        assert np.isclose(outputs.site_potentials[0], 8.91945973)
+
+        direct_site_potentials = get_site_potentials(self.bulk_dir, dir_type="bulk", outputs=outputs)
+        assert np.allclose(outputs.site_potentials, direct_site_potentials)
+
+    def test_calculation_outputs_serialisation(self):
+        """
+        Test that ``energy``/``structure``/``site_potentials`` survive an
+        ``as_dict()``/``from_dict()`` round trip with their parsed numerical
+        values intact.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outputs = get_calculation_outputs(self.bulk_dir, label="bulk", load_site_potentials=True)
+
+        reloaded = CalculationOutputs.from_dict(outputs.as_dict())
+        assert np.isclose(reloaded.energy, outputs.energy)
+        assert len(reloaded.structure) == len(outputs.structure)
+        assert np.allclose(reloaded.site_potentials, outputs.site_potentials)
+        assert np.isclose(reloaded.get_computed_entry().energy, outputs.energy)

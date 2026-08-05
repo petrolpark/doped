@@ -108,6 +108,8 @@ def get_calculation_outputs(
     if load_site_potentials:
         site_potentials = get_site_potentials(path, dir_type=label, **kwargs)
 
+    vbm, cbm, band_gap = get_band_edge_eigenvalues_from_aims_output(aims_output)
+
     return CalculationOutputs(
         structure=image.geometry.structure,
         energy=image.results["total_energy"],
@@ -127,9 +129,9 @@ def get_calculation_outputs(
         magnetization=get_magnetization_from_aims_output(aims_output),
         # noncollinear=None,  # TODO: determine from `aims_output.metadata`/`control.in`, not yet
         #   implemented
-        # vbm=None,  # TODO: band-edge (VBM/CBM/gap) determination not yet implemented for FHI-aims
-        # cbm=None,
-        # band_gap=None,
+        vbm=vbm,
+        cbm=cbm,
+        band_gap=band_gap,
         # planar_averaged_potentials=None,  # not planned -- FNV (cube-potential) charge correction is
         #   not supported for the FHI-aims backend, only eFNV (see `get_site_potentials`)
         site_potentials=site_potentials,
@@ -296,6 +298,24 @@ def get_magnetization_from_aims_output(aims_output: AimsStdout) -> float:
     """
     magmom = aims_output.get_image(-1).results.get("magmom")
     return 0.0 if magmom is None else float(magmom)
+
+
+def get_band_edge_eigenvalues_from_aims_output(
+    aims_output: AimsStdout,
+) -> tuple[float | None, float | None, float | None]:
+    """
+    Get the (VBM, CBM, band gap) eigenvalues from an ``AimsStdout``.
+
+    FHI-aims directly prints the "Highest occupied state (VBM)", "Lowest
+    unoccupied state (CBM)" and overall "HOMO-LUMO gap" (already summed over
+    k-points and spin channels) at the end of each SCF cycle, already parsed
+    by ``pyfhiaims`` and exposed as ``AimsStdout.get_image(-1).results
+    ["vbm"]``/``["cbm"]``/``["gap"]``. Direct read, not a reconstruction.
+    All three are referenced to the internal zero (see
+    ``get_atom_projected_dos``), consistent with ``efermi``.
+    """
+    results = aims_output.get_image(-1).results
+    return results.get("vbm"), results.get("cbm"), results.get("gap")
 
 
 def get_atomic_magnetic_moments_from_aims_output(aims_output: AimsStdout) -> np.ndarray:
