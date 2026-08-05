@@ -17,12 +17,8 @@ from pymatgen.core.structure import Structure
 from pymatgen.util.typing import PathLike
 
 from doped.io.outputs import CalculationOutputs
-from doped.io.utils import find_archived_fname
-
-# --------------------------------------------------------------------------
-# Backend protocol entry points (see the "Adding Support for a New
-# Calculator" docs page)
-# --------------------------------------------------------------------------
+from doped.io.utils import (_get_output_files_and_check_if_multiple,
+                             _multiple_files_warning, find_archived_fname)
 
 CALC_OUTPUT_MASK = ("aims.out", "aims.out.gz")
 """
@@ -56,6 +52,7 @@ def get_calculation_outputs(
     path: PathLike,
     label: str = "calculation",
     parse_projected_eigen: bool | None = None,
+    load_site_potentials: bool = False,
     **kwargs,
 ) -> CalculationOutputs:
     """
@@ -63,12 +60,14 @@ def get_calculation_outputs(
     (calculator-agnostic) :class:`~doped.io.outputs.CalculationOutputs`
     object.
 
-    Not yet implemented -- FHI-aims output parsing (and charge corrections)
-    are still in development; see the other functions in this module for the
-    individual parsing steps planned. ``label`` and ``parse_projected_eigen``
-    are accepted (and currently ignored) to match the generic ``doped.io``
-    backend protocol (used for informative warnings/parsing efficiency
-    choices with other calculators).
+    The ``aims.out(.gz)`` file in ``path`` is parsed for the final energy,
+    structure and basic calculation metadata (see the ``get_X_from_aims_
+    output`` functions in this module). FHI-aims output parsing (and charge
+    corrections) is still in development, so several ``CalculationOutputs``
+    fields are not yet populated here -- see the commented-out fields below.
+    ``label`` and ``parse_projected_eigen`` are accepted (and currently
+    ignored) to match the generic ``doped.io`` backend protocol (used for
+    informative warnings/parsing efficiency choices with other calculators).
 
     Part of the ``doped.io`` backend protocol.
 
@@ -83,13 +82,71 @@ def get_calculation_outputs(
         parse_projected_eigen (bool):
             Whether to parse orbital projections, for eigenvalue / shallow
             defect analyses. Default is ``None``.
+        load_site_potentials (bool):
+            Whether to also parse the atomic-site potentials (via
+            :func:`get_site_potentials`, from the ``atom_proj_dos`` files in
+            ``path`` -- the same directory as the parsed ``aims.out``), for
+            the Kumagai (eFNV) charge correction. Default is ``False``.
         **kwargs:
-            Additional keyword arguments (currently unused).
+            Additional keyword arguments passed to :func:`get_site_potentials`
+            (e.g. ``core_level``, ``min_relative_height``) if
+            ``load_site_potentials`` is ``True``; otherwise unused.
 
     Returns:
         CalculationOutputs: The parsed calculation outputs.
     """
-    raise NotImplementedError
+    aims_out_path, multiple = _get_output_files_and_check_if_multiple("aims.out", path)
+    if multiple:
+        _multiple_files_warning(
+            "aims.out", path, aims_out_path, action=FILE_PARSING_ACTIONS["aims.out"], dir_type=label
+        )
+    aims_output = get_aims_output(aims_out_path)
+    image = aims_output.get_image(-1)
+    header_summary = aims_output.header_summary
+
+    site_potentials = None
+    if load_site_potentials:
+        site_potentials = get_site_potentials(path, dir_type=label, **kwargs)
+
+    return CalculationOutputs(
+        structure=image.geometry.structure,
+        energy=image.results["total_energy"],
+        calculator="aims",
+        directory=path,
+        converged_electronic=image.converged,
+        converged_ionic=aims_output.geometry_converged,  # None if not a relaxation
+        efermi=image.results.get("fermi_energy"),
+        # eigenvalues=None,  # TODO: `image.results["eigenvalues"]`/["occupations"] are parsed by
+        #   `pyfhiaims`, but need reshaping to the `pymatgen`-style {Spin: array} format used here
+        # projected_eigenvalues=None,  # TODO: orbital-projected eigenvalue parsing not yet implemented
+        # projected_magnetisation=None,  # TODO: non-collinear projected magnetisation not yet implemented
+        kpoint_coords=_as_array_or_none(header_summary["k_points"]),
+        kpoint_weights=_as_array_or_none(header_summary["k_point_weights"]),
+        nelect=get_n_electrons_from_aims_output(aims_output),
+        charge=total_charge_from_aims_output(aims_output),
+        magnetization=get_magnetization_from_aims_output(aims_output),
+        # noncollinear=None,  # TODO: determine from `aims_output.metadata`/`control.in`, not yet
+        #   implemented
+        # vbm=None,  # TODO: band-edge (VBM/CBM/gap) determination not yet implemented for FHI-aims
+        # cbm=None,
+        # band_gap=None,
+        # planar_averaged_potentials=None,  # not planned -- FNV (cube-potential) charge correction is
+        #   not supported for the FHI-aims backend, only eFNV (see `get_site_potentials`)
+        site_potentials=site_potentials,
+        run_metadata=dict(aims_output.metadata),
+        raw={"aims_output": aims_output},
+    )
+
+
+def _as_array_or_none(values: list | None) -> np.ndarray | None:
+    """
+    Convert ``values`` to a ``np.ndarray``, or return ``None`` if ``values``
+    is ``None`` (as ``aims_output.header_summary["k_points"]``/
+    ``["k_point_weights"]`` are, if ``output k_point_list`` was not set in
+    ``control.in``).
+    """
+    return None if values is None else np.array(values)
+
 
 def get_aims_output(aims_out_path: PathLike, **kwargs) -> AimsStdout:
     """
