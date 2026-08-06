@@ -10,3 +10,23 @@ output:
     # can be overridden via `user_parameters`), needed for get_atom_projected_dos and
     # get_core_level_eigenvalue (core-level-eigenvalue-based potential alignment via
     # `get_site_potentials`, for the eFNV charge correction)
+
+# The following mirror the defaults in `doped/io/vasp/VASP_sets/VASP_DefectSet.yaml` and
+# `VASP_RelaxSet.yaml` (i.e. doped's own general-purpose defect-calculation philosophy: spin
+# polarisation on, Gaussian smearing, relaxed geometry, fixed (not per-atom-scaled) SCF energy
+# convergence), so that `doped`'s FHI-aims and VASP defect defaults are internally consistent.
+# `xc` (functional) is deliberately NOT set here, as it is strongly system/study-dependent (see
+# `DefectRelaxSet`/`DefectsSet` docstrings) and must be set via `user_parameters`.
+
+spin: collinear  # spin polarisation likely for defects, mirroring VASP_DefectSet.yaml's `ISPIN = 2`
+default_initial_moment: 0.1  # small symmetry-breaking initial spin nudge (required by `spin
+  # collinear`; see the `spin`/`default_initial_moment` manual entries), mirroring the small
+  # non-zero default `MAGMOM` VASP assigns per atom rather than a specific physical guess
+occupation_type:
+  - gaussian
+  - 0.05  # width in eV, mirroring VASP_RelaxSet.yaml's `ISMEAR = 0`, `SIGMA = 0.05`
+sc_accuracy_etot: 1.0e-05  # eV, mirroring VASP_DefectSet.yaml's fixed `EDIFF = 1e-5` for defects
+sc_iter_limit: 100  # mirrors VASP's default `NELM = 100`
+relax_geometry:
+  - bfgs
+  - 0.01  # force convergence in eV/Angstrom, mirroring VASP_RelaxSet.yaml's `EDIFFG = -0.01`

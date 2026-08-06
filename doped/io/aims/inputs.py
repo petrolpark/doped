@@ -34,7 +34,9 @@ AIMS_PATH_SEARCHED = False
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_kpoints_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "KpointsSet.yaml"))
 default_defect_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_DefectSet.yaml"))
+default_ncl_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_NCLDefectSet.yaml"))
 GAMMA_KPOINTS_SETTINGS = {"k_grid": (1, 1, 1)}
+SOC_MIN_ATOMIC_NUMBER = 31  # matches doped.io.vasp.inputs' `DefectRelaxSet.soc` auto-detection
 
 
 def _with_default_defect_set(user_parameters: dict[str, Any] | None) -> dict[str, Any]:
@@ -54,6 +56,25 @@ def _with_default_defect_set(user_parameters: dict[str, Any] | None) -> dict[str
     """
     user_parameters = user_parameters or {}
     merged_parameters = copy.deepcopy(default_defect_set)
+    merged_parameters.update(user_parameters)
+    merged_parameters["output"] = list(
+        dict.fromkeys([*default_defect_set.get("output", []), *user_parameters.get("output", [])])
+    )
+    return merged_parameters
+
+
+def _with_default_ncl_set(user_parameters: dict[str, Any] | None) -> dict[str, Any]:
+    r"""
+    Merge ``user_parameters`` with the default ``control.in`` parameters for the
+    ``aims_ncl`` (single-point, spin-orbit-coupled) defect calculation stage, i.e.
+    ``doped/io/aims/AIMS_sets/AIMS_DefectSet.yaml`` overridden by
+    ``doped/io/aims/AIMS_sets/AIMS_NCLDefectSet.yaml`` (see that file for the rationale
+    of each override; e.g. disabling geometry relaxation and including spin-orbit
+    coupling), then by ``user_parameters``.
+    """
+    user_parameters = user_parameters or {}
+    merged_parameters = copy.deepcopy(default_defect_set)
+    merged_parameters.update(default_ncl_set)
     merged_parameters.update(user_parameters)
     merged_parameters["output"] = list(
         dict.fromkeys([*default_defect_set.get("output", []), *user_parameters.get("output", [])])
@@ -388,6 +409,7 @@ class DefectRelaxSet(MSONable):
         user_properties: Sequence[str] | None = None,
         user_kpoints_settings: dict[str, Any] | None = None,
         species_defaults: PathLike | None = None,
+        soc: bool | None = None,
         **kwargs,
     ):
         r"""
@@ -424,6 +446,13 @@ class DefectRelaxSet(MSONable):
                 configured ``AIMS_SPECIES_DIR``.
                 A path relative to ``AIMS_SPECIES_DIR`` is also accepted if
                 ``AIMS_SPECIES_DIR`` is configured.
+            soc (bool):
+                Whether to generate an ``aims_ncl`` (single-point,
+                spin-orbit-coupled) ``DopedAimsInputSet``/subfolder. If ``None``
+                (default), this is set to ``True`` for defect supercells with a
+                max atomic number (Z) >= 31 (i.e. further down the periodic
+                table than Zn), otherwise ``False`` -- mirroring
+                ``doped.io.vasp.inputs.DefectRelaxSet.soc``.
 
         """
 
@@ -432,17 +461,19 @@ class DefectRelaxSet(MSONable):
             charge_state if charge_state is not None else getattr(defect_entry, "charge_state", 0)
         )
         self.user_parameters = _with_default_defect_set(user_parameters)
+        self.user_ncl_parameters = _with_default_ncl_set(user_parameters)
         self.user_properties = user_properties or ("energy", "free_energy")
         self.user_kpoints_settings = (
             copy.deepcopy(user_kpoints_settings) if user_kpoints_settings else dict(default_kpoints_set)
         )
         self.species_defaults = species_defaults
         if species_defaults is not None:
-            if "species_dir" in self.user_parameters:
-                raise ValueError(
-                    "Specify either species_defaults or user_parameters['species_dir'], not both."
-                )
-            self.user_parameters["species_dir"] = _resolve_species_defaults(species_defaults)
+            for parameters in (self.user_parameters, self.user_ncl_parameters):
+                if "species_dir" in parameters:
+                    raise ValueError(
+                        "Specify either species_defaults or user_parameters['species_dir'], not both."
+                    )
+                parameters["species_dir"] = _resolve_species_defaults(species_defaults)
         self.kwargs = kwargs
 
         if isinstance(self.defect_entry, Structure):
@@ -454,20 +485,23 @@ class DefectRelaxSet(MSONable):
         else:
             raise TypeError("defect_entry must be a doped/pymatgen DefectEntry or Structure object.")
 
+        self.soc = soc if soc is not None else max(self.defect_supercell.atomic_numbers) >= SOC_MIN_ATOMIC_NUMBER
+
         # Use the defect entry / provided `charge_state` as canonical.
         # If the user supplied `user_parameters['charge']` and it differs,
         # warn the user and override with `charge_state`.
-        if "charge" in self.user_parameters and int(self.user_parameters["charge"]) != int(self.charge_state):
-            warnings.warn(
-                "user_parameters['charge'] differs from defect `charge_state`; preferring defect `charge_state`.",
-                UserWarning,
-                stacklevel=3,
-            )
-
-        try:
-            self.user_parameters["charge"] = int(self.charge_state)
-        except Exception:
-            self.user_parameters["charge"] = self.charge_state
+        for parameters in (self.user_parameters, self.user_ncl_parameters):
+            if "charge" in parameters and int(parameters["charge"]) != int(self.charge_state):
+                warnings.warn(
+                    "user_parameters['charge'] differs from defect `charge_state`; preferring defect "
+                    "`charge_state`.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            try:
+                parameters["charge"] = int(self.charge_state)
+            except Exception:
+                parameters["charge"] = self.charge_state
 
     @property
     def aims_gam(self) -> DopedAimsInputSet:
@@ -490,12 +524,29 @@ class DefectRelaxSet(MSONable):
             properties=self.user_properties,
         )
 
-    def _bulk_input_set(self, kpoints_settings: dict[str, Any]) -> DopedAimsInputSet | None:
+    @property
+    def aims_ncl(self) -> DopedAimsInputSet | None:
+        """``DefectDictSet``-equivalent for a defect supercell single-point
+        calculation with spin-orbit coupling (SOC) included, using ``aims_ncl``
+        (mirroring VASP's ``vasp_ncl``). Returns ``None`` if ``self.soc`` is
+        ``False``. Uses the same (non-Γ-only) kpoint mesh as ``aims_std``, per
+        ``self.user_kpoints_settings``."""
+        if not self.soc:
+            return None
+        return DopedAimsInputSet(
+            parameters={**self.user_ncl_parameters, **self.user_kpoints_settings},
+            structure=self.defect_supercell,
+            properties=self.user_properties,
+        )
+
+    def _bulk_input_set(
+        self, parameters: dict[str, Any], kpoints_settings: dict[str, Any]
+    ) -> DopedAimsInputSet | None:
         if self.bulk_supercell is None:
             return None
         # bulk reference is always neutral, and shouldn't inherit the formal oxidation
         # states doped decorates onto the bulk supercell for internal charge-state guessing
-        bulk_parameters = copy.deepcopy(self.user_parameters)
+        bulk_parameters = copy.deepcopy(parameters)
         bulk_parameters["charge"] = 0
         bulk_parameters.update(kpoints_settings)
         bulk_structure = self.bulk_supercell.copy()
@@ -510,13 +561,22 @@ class DefectRelaxSet(MSONable):
     def bulk_aims_gam(self) -> DopedAimsInputSet | None:
         """Γ-point-only (``aims_gam``) input set for the pristine bulk supercell
         reference calculation."""
-        return self._bulk_input_set(GAMMA_KPOINTS_SETTINGS)
+        return self._bulk_input_set(self.user_parameters, GAMMA_KPOINTS_SETTINGS)
 
     @property
     def bulk_aims_std(self) -> DopedAimsInputSet | None:
         """``aims_std`` (non-Γ-only) input set for the pristine bulk supercell
         reference calculation."""
-        return self._bulk_input_set(self.user_kpoints_settings)
+        return self._bulk_input_set(self.user_parameters, self.user_kpoints_settings)
+
+    @property
+    def bulk_aims_ncl(self) -> DopedAimsInputSet | None:
+        """``aims_ncl`` (single-point, spin-orbit-coupled) input set for the
+        pristine bulk supercell reference calculation. Returns ``None`` if
+        ``self.soc`` is ``False``."""
+        if not self.soc:
+            return None
+        return self._bulk_input_set(self.user_ncl_parameters, self.user_kpoints_settings)
 
     #TODO currently copied from VASP implementation. would like to move this to ABC for both VASP, aims and others
     def _get_output_path(self, defect_dir: PathLike | None = None, subfolder: PathLike | None = None):
@@ -579,8 +639,9 @@ class DefectRelaxSet(MSONable):
         **kwargs,
     ):
         r"""
-        Write FHI-aims input files to ``aims_gam`` and ``aims_std`` subfolders in
-        the ``defect_dir`` folder.
+        Write FHI-aims input files to ``aims_gam`` and ``aims_std`` (and, if
+        ``self.soc`` is ``True``, ``aims_ncl``) subfolders in the ``defect_dir``
+        folder.
 
         - ``aims_gam``:
             Γ-point-only defect supercell relaxation (explicit ``k_grid 1 1 1``).
@@ -588,6 +649,13 @@ class DefectRelaxSet(MSONable):
             Defect supercell relaxation with a non-Γ-only kpoint mesh, per
             ``self.user_kpoints_settings`` (default: ``k_grid_density = 5.0``,
             see ``doped/AIMS_sets/KpointsSet.yaml``).
+        - ``aims_ncl``:
+            Single-point (static) energy calculation with spin-orbit coupling
+            (SOC) included, using the same kpoint mesh as ``aims_std``. Only
+            written if ``self.soc`` is ``True`` (by default, set to ``True``
+            for defect supercells with a max atomic number (Z) >= 31, i.e.
+            further down the periodic table than Zn; see ``DefectRelaxSet``
+            docstring).
 
         Args:
             defect_dir (PathLike):
@@ -647,6 +715,14 @@ class DefectRelaxSet(MSONable):
             self.aims_std,
             **kwargs,
         )
+        if self.soc:
+            self._write_aims_xxx_files(
+                defect_dir,
+                "aims_ncl",
+                rattle,
+                self.aims_ncl,
+                **kwargs,
+            )
 
         if bulk and self.bulk_aims_gam is not None:
             output_path = os.path.dirname(str(defect_dir)) if "/" in str(defect_dir) else "."
@@ -654,6 +730,8 @@ class DefectRelaxSet(MSONable):
             bulk_dir = os.path.join(output_path, f"{formula}_bulk")
             self.bulk_aims_gam.write_input(os.path.join(bulk_dir, "aims_gam"), **kwargs)
             self.bulk_aims_std.write_input(os.path.join(bulk_dir, "aims_std"), **kwargs)
+            if self.soc:
+                self.bulk_aims_ncl.write_input(os.path.join(bulk_dir, "aims_ncl"), **kwargs)
 
 
 class DefectsSet(DefectsSetBase):
@@ -671,6 +749,7 @@ class DefectsSet(DefectsSetBase):
         user_properties: Sequence[str] | None = None,
         user_kpoints_settings: dict[str, Any] | None = None,
         species_defaults: PathLike | None = None,
+        soc: bool | None = None,
         **kwargs,
     ):
         r"""
@@ -678,11 +757,20 @@ class DefectsSet(DefectsSetBase):
 
         Input files are written separately with :meth:`write_files`, matching
         the lifecycle of :class:`doped.io.vasp.inputs.DefectsSet`.
+
+        ``soc`` (bool):
+            Whether to generate ``aims_ncl`` (single-point, spin-orbit-coupled)
+            input sets. If ``None`` (default), this is determined once for the
+            whole set (mirroring ``doped.io.vasp.inputs.DefectsSet``), set to
+            ``True`` if the max atomic number (Z) across all defect supercells
+            in the set is >= 31 (i.e. further down the periodic table than
+            Zn), otherwise ``False``.
         """
         self.user_parameters = user_parameters
         self.user_properties = user_properties
         self.user_kpoints_settings = user_kpoints_settings
         self.species_defaults = species_defaults
+        self._input_soc = soc
         super().__init__(defect_entries, **kwargs)  # format entries & build ``DefectRelaxSet``s
 
         # All entries in a DefectsGenerator share the same bulk supercell. As with
@@ -691,6 +779,23 @@ class DefectsSet(DefectsSetBase):
         self.bulk_supercell = defect_relax_set.bulk_supercell
         self.bulk_aims_gam = defect_relax_set.bulk_aims_gam
         self.bulk_aims_std = defect_relax_set.bulk_aims_std
+        self.bulk_aims_ncl = defect_relax_set.bulk_aims_ncl
+
+    def _setup(self):
+        """
+        Determine whether SOC (``aims_ncl``) input sets should be generated for
+        the whole set, if ``soc`` was not explicitly set, mirroring
+        ``doped.io.vasp.inputs.DefectsSet._setup``.
+        """
+        if self._input_soc is not None:
+            self.soc = self._input_soc
+            return
+
+        max_atomic_num = max(
+            max(_get_defect_supercell(defect_entry).atomic_numbers)
+            for defect_entry in self.defect_entries.values()
+        )
+        self.soc = max_atomic_num >= SOC_MIN_ATOMIC_NUMBER
 
     def _defect_input_set(self, defect_entry: DefectEntry) -> DefectRelaxSet:
         """
@@ -699,6 +804,7 @@ class DefectsSet(DefectsSetBase):
         return DefectRelaxSet(
             defect_entry=defect_entry,
             charge_state=defect_entry.charge_state,
+            soc=self.soc,
             user_parameters=self.user_parameters,
             user_properties=self.user_properties,
             user_kpoints_settings=self.user_kpoints_settings,

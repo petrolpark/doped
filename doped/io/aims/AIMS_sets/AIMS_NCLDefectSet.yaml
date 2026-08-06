@@ -1,0 +1,12 @@
+# Overrides applied on top of `AIMS_DefectSet.yaml` for the `aims_ncl` defect calculation stage
+# (single-point energy calculation with spin-orbit coupling included), mirroring VASP's
+# `vasp_ncl`/`singlepoint_incar_settings` in `doped/io/vasp/inputs.py`: no geometry relaxation
+# (the `aims_gam`/`aims_std` stages are relied upon for that), spin-orbit coupling included as a
+# post-processed correction (FHI-aims implements SOC non-self-consistently, unlike VASP's fully
+# self-consistent non-collinear `LNONCOLLINEAR`/`LSORBIT` treatment -- see the
+# `include_spin_orbit` manual entry), and a tighter SCF energy convergence for the final energy.
+
+include_spin_orbit: pauli  # post-processed SOC correction (FHI-aims's recommended/default method)
+relax_geometry: none  # single-point calculation, mirroring VASP's `IBRION = -1`, `NSW = 0`
+sc_accuracy_etot: 1.0e-06  # tighter than AIMS_DefectSet.yaml's 1e-5, for the final SOC-corrected
+  # energy, mirroring VASP's `singlepoint_incar_settings` tightened `EDIFF = 1e-6`

@@ -31,6 +31,10 @@ class AimsTest(unittest.TestCase):
     def setUp(self):
         self.prim_cdte = Structure.from_file(f"{EXAMPLE_DIR}/CdTe/relaxed_primitive_POSCAR")
         self.aims_output_path = Path(data_dir) / "aims"
+        self.mgo_prim = Structure.from_file(f"{EXAMPLE_DIR}/MgO/Input_files/MgO_POSCAR_prim")
+        self.cu2sise3_bulk = Structure.from_file(f"{EXAMPLE_DIR}/Cu2SiSe3/bulk/vasp_std/vasprun.xml.gz")
+        self.sb2si2te6_bulk = Structure.from_file(f"{EXAMPLE_DIR}/Sb2Si2Te6/Bulk/vasprun.xml.gz")
+        self.ytos_bulk = Structure.from_file(f"{EXAMPLE_DIR}/YTOS/Bulk/vasprun.xml.gz")
 
     def test_species_defaults_path_resolution(self):
         """Resolve the default light species_defaults shorthand."""
@@ -43,43 +47,149 @@ class AimsTest(unittest.TestCase):
                 assert _resolve_species_defaults("light") == str(basis_path.resolve())
                 assert _resolve_species_defaults(Path("defaults_2020") / "light") == str(basis_path.resolve())
 
+    def test_soc_auto_detection(self):
+        """``DefectRelaxSet.soc`` is auto-set from the max atomic number in the
+        defect supercell (>= 31, i.e. heavier than Zn), mirroring
+        ``doped.io.vasp.inputs.DefectRelaxSet.soc``, and gates whether
+        ``aims_ncl``/``bulk_aims_ncl`` are generated."""
+        from doped.io.aims.inputs import DefectRelaxSet
+
+        light_element_relax_set = DefectRelaxSet(self.mgo_prim, user_parameters={"xc": "pbesol"})
+        assert light_element_relax_set.soc is False
+        assert light_element_relax_set.aims_ncl is None
+
+        heavy_element_relax_set = DefectRelaxSet(self.prim_cdte, user_parameters={"xc": "pbe"})
+        assert heavy_element_relax_set.soc is True
+        assert re.findall(
+            r"^\s*include_spin_orbit\s+(\S+)\s*$",
+            heavy_element_relax_set.aims_ncl.inputs["control.in"],
+            re.MULTILINE,
+        ) == ["pauli"]
+
+        # explicit `soc` kwarg overrides the atomic-number auto-detection:
+        overridden_relax_set = DefectRelaxSet(self.prim_cdte, user_parameters={"xc": "pbe"}, soc=False)
+        assert overridden_relax_set.soc is False
+        assert overridden_relax_set.aims_ncl is None
+
     def test_CdTe_defect_input_generation(self):
-        """Generate CdTe defects and write an FHI-aims input set for each."""
-        defect_generator = DefectsGenerator(self.prim_cdte)
-        output_path = self.aims_output_path / "CdTe"
+        """Generate CdTe defects and write an FHI-aims input set for each.
+
+        The real CdTe VASP calculations (``examples/CdTe/Int_Te_3_1``,
+        ``Int_Te_3_2``, ``Te_Cd_+1``) used a non-standard tuned hybrid:
+        ``LHFCALC = True``, ``AEXX = 0.345``, ``HFSCREEN = 0.2`` Å\\ :sup:`-1`
+        (NOT literature HSE06's 25% exact exchange), hence the explicit
+        ``hybrid_xc_coeff`` override below (see the ``hybrid_xc_coeff``/
+        ``hse_unit`` entries in ``docs/FHI-aims_manual.txt``).
+        """
+        self._generate_and_check_defect_inputs(
+            self.prim_cdte,
+            "CdTe",
+            user_parameters={"xc": "hse06 0.2", "hse_unit": "A", "hybrid_xc_coeff": 0.345},
+            expect_soc=True,  # Cd (Z=48), Te (Z=52) >= 31
+        )
+
+    def test_MgO_defect_input_generation(self):
+        """Generate MgO defects and write an FHI-aims input set for each.
+
+        The real MgO VASP calculations used ``GGA = Ps`` (PBEsol) with
+        ``LHFCALC = False`` (no hybridisation).
+        """
+        self._generate_and_check_defect_inputs(
+            self.mgo_prim, "MgO", user_parameters={"xc": "pbesol"}, expect_soc=False  # Mg/O < 31
+        )
+
+    def test_Cu2SiSe3_defect_input_generation(self):
+        """Generate Cu2SiSe3 defects and write an FHI-aims input set for each.
+
+        The real Cu2SiSe3 VASP calculations used literature HSE06
+        (``LHFCALC = True``, ``AEXX = 0.25``, ``HFSCREEN = 0.2`` Å\\ :sup:`-1`).
+        """
+        self._generate_and_check_defect_inputs(
+            self.cu2sise3_bulk,
+            "Cu2SiSe3",
+            user_parameters={"xc": "hse06 0.2", "hse_unit": "A", "hybrid_xc_coeff": 0.25},
+            expect_soc=True,  # Se (Z=34) >= 31
+        )
+
+    def test_Sb2Si2Te6_defect_input_generation(self):
+        """Generate Sb2Si2Te6 defects and write an FHI-aims input set for each.
+
+        The real Sb2Si2Te6 VASP calculations used literature HSE06
+        (``LHFCALC = True``, ``AEXX = 0.25``, ``HFSCREEN = 0.208`` Å\\ :sup:`-1`).
+        """
+        self._generate_and_check_defect_inputs(
+            self.sb2si2te6_bulk,
+            "Sb2Si2Te6",
+            user_parameters={"xc": "hse06 0.208", "hse_unit": "A", "hybrid_xc_coeff": 0.25},
+            expect_soc=True,  # Sb (Z=51), Te (Z=52) >= 31
+        )
+
+    def test_YTOS_defect_input_generation(self):
+        """Generate YTOS defects and write an FHI-aims input set for each.
+
+        The real YTOS VASP calculations used plain PBE (``LHFCALC = False``).
+        """
+        self._generate_and_check_defect_inputs(
+            self.ytos_bulk, "YTOS", user_parameters={"xc": "pbe"}, expect_soc=True  # Y (Z=39) >= 31
+        )
+
+    def _generate_and_check_defect_inputs(self, structure, material_dir_name, user_parameters, expect_soc):
+        """Generate defects for ``structure`` and write/check an FHI-aims input set
+        for each, in ``self.aims_output_path / material_dir_name``.
+
+        ``expect_soc`` is the expected value of ``DefectsSet.soc`` (whether
+        ``aims_ncl`` -- single-point, spin-orbit-coupled -- input sets should
+        also be generated); set to ``True`` if the max atomic number across the
+        material's elements is >= 31 (i.e. further down the periodic table than
+        Zn), mirroring ``doped.io.vasp.inputs.DefectsSet``'s auto-detection.
+        """
+        defect_generator = DefectsGenerator(structure)
+        output_path = self.aims_output_path / material_dir_name
         os.makedirs(output_path, exist_ok=True)
 
         defects_set = DefectsSet(
             defect_generator,
-            user_parameters={"xc": "pbe"},
+            user_parameters=user_parameters,
             species_defaults="light",
         )
+        assert defects_set.soc is expect_soc
         defects_set.write_files(output_path=output_path, rattle=False, processes=1)
 
         assert len(defects_set) == len(defect_generator.defect_entries)
-        assert os.path.isfile(os.path.join(output_path, "CdTe_defects_generator.json.gz"))
-        reloaded_generator = loadfn(os.path.join(output_path, "CdTe_defects_generator.json.gz"))
+        formula = defect_generator.bulk_supercell.composition.get_reduced_formula_and_factor(
+            iupac_ordering=True
+        )[0]
+        generator_json = os.path.join(output_path, f"{formula}_defects_generator.json.gz")
+        assert os.path.isfile(generator_json)
+        reloaded_generator = loadfn(generator_json)
         assert set(reloaded_generator.defect_entries) == set(defect_generator.defect_entries)
         assert reloaded_generator.bulk_supercell == defect_generator.bulk_supercell
 
+        subfolders = ("aims_gam", "aims_std", "aims_ncl") if expect_soc else ("aims_gam", "aims_std")
         for defect_name in defect_generator.defect_entries:
             defect_dir = os.path.join(output_path, defect_name)
-            for subfolder in ("aims_gam", "aims_std"):
+            for subfolder in subfolders:
                 subfolder_dir = os.path.join(defect_dir, subfolder)
                 assert os.path.isfile(os.path.join(subfolder_dir, "parameters.json"))
                 assert os.path.isfile(os.path.join(subfolder_dir, f"{defect_name}.json.gz"))
                 self._check_valid_control_and_geometry(subfolder_dir, subfolder)
+            if not expect_soc:
+                assert not os.path.isdir(os.path.join(defect_dir, "aims_ncl"))
 
-        bulk_dir = os.path.join(output_path, "CdTe_bulk")
-        for subfolder in ("aims_gam", "aims_std"):
+        bulk_dir = os.path.join(output_path, f"{formula}_bulk")
+        for subfolder in subfolders:
             self._check_valid_control_and_geometry(os.path.join(bulk_dir, subfolder), subfolder)
 
     def _check_valid_control_and_geometry(self, subfolder_dir, subfolder):
         """Check that ``control.in``/``geometry.in`` in ``subfolder_dir`` are valid,
         self-consistent FHI-aims inputs for a periodic calculation (i.e. a `k`-point
-        grid is specified, matching ``aims_gam``/``aims_std`` as appropriate, and the
-        total charge in ``control.in`` matches the summed ``initial_charge``\\s in
-        ``geometry.in``)."""
+        grid is specified, matching ``aims_gam``/``aims_std``/``aims_ncl`` as
+        appropriate, the total charge in ``control.in`` matches the summed
+        ``initial_charge``\\s in ``geometry.in``, spin polarisation/smearing/SCF
+        convergence are set matching ``AIMS_DefectSet.yaml``, and
+        ``aims_gam``/``aims_std`` request geometry relaxation while ``aims_ncl``
+        is single-point with spin-orbit coupling included, per
+        ``AIMS_NCLDefectSet.yaml``)."""
         control_path = os.path.join(subfolder_dir, "control.in")
         geometry_path = os.path.join(subfolder_dir, "geometry.in")
         assert os.path.isfile(control_path)
@@ -96,7 +206,7 @@ class AimsTest(unittest.TestCase):
         if subfolder == "aims_gam":
             assert k_grid_matches == [("1", "1", "1")]
             assert not k_grid_density_matches
-        else:  # aims_std
+        else:  # aims_std/aims_ncl
             assert not k_grid_matches
             assert k_grid_density_matches == ["5.0"]
 
@@ -108,6 +218,29 @@ class AimsTest(unittest.TestCase):
             for match in re.findall(r"^\s*initial_charge\s+([+-]?[0-9]+(?:\.[0-9]*)?)", geometry, re.MULTILINE)
         )
         assert geometry_initial_charge == control_charge
+
+        # spin polarisation, smearing and SCF iteration limit are always set, matching
+        # AIMS_DefectSet.yaml (independent of relaxation/SOC stage):
+        assert re.findall(r"^\s*spin\s+(\S+)\s*$", control, re.MULTILINE) == ["collinear"]
+        assert re.findall(r"^\s*default_initial_moment\s+(\S+)\s*$", control, re.MULTILINE) == ["0.1"]
+        assert re.findall(r"^\s*occupation_type\s+(\S+\s+\S+)\s*$", control, re.MULTILINE) == [
+            "gaussian 0.05"
+        ]
+        assert re.findall(r"^\s*sc_iter_limit\s+(\S+)\s*$", control, re.MULTILINE) == ["100"]
+
+        relax_matches = re.findall(r"^\s*relax_geometry\s+(.+)\s*$", control, re.MULTILINE)
+        soc_matches = re.findall(r"^\s*include_spin_orbit\s+(\S+)\s*$", control, re.MULTILINE)
+        sc_accuracy_matches = re.findall(r"^\s*sc_accuracy_etot\s+(\S+)\s*$", control, re.MULTILINE)
+        if subfolder == "aims_ncl":
+            # single-point (no relaxation tolerance needed), spin-orbit-coupled, tighter SCF
+            # convergence:
+            assert relax_matches == ["none"]
+            assert soc_matches == ["pauli"]
+            assert sc_accuracy_matches == ["1e-06"]
+        else:  # aims_gam/aims_std: geometry relaxation, no SOC:
+            assert relax_matches == ["bfgs 0.01"]
+            assert not soc_matches
+            assert sc_accuracy_matches == ["1e-05"]
 
 
 class AimsOutputsTest(unittest.TestCase):
