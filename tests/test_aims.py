@@ -15,7 +15,8 @@ from test_utils import EXAMPLE_DIR, data_dir
 SETTINGS["AIMS_SPECIES_DIR"] = "~/Documents/fhi-aims.260331/species_defaults"
 
 from doped.generation import DefectsGenerator
-from doped.io.aims.inputs import DefectsSet, _resolve_species_defaults
+from doped.io.aims.inputs import DefectsSet
+from doped.io.aims.utils import _resolve_species_defaults
 from doped.io.aims.outputs import (
     get_aims_output, get_atomic_magnetic_moments_from_aims_output,
     get_band_edge_eigenvalues_from_aims_output, get_calculation_outputs,
@@ -43,7 +44,7 @@ class AimsTest(unittest.TestCase):
             basis_path = species_defaults / "defaults_2020" / "light"
             basis_path.mkdir(parents=True)
             assert _resolve_species_defaults(basis_path) == str(basis_path.resolve())
-            with patch("doped.io.aims.inputs.SETTINGS", {"AIMS_SPECIES_DIR": str(species_defaults)}):
+            with patch("doped.io.aims.utils.SETTINGS", {"AIMS_SPECIES_DIR": str(species_defaults)}):
                 assert _resolve_species_defaults("light") == str(basis_path.resolve())
                 assert _resolve_species_defaults(Path("defaults_2020") / "light") == str(basis_path.resolve())
 
@@ -166,27 +167,34 @@ class AimsTest(unittest.TestCase):
         assert reloaded_generator.bulk_supercell == defect_generator.bulk_supercell
 
         subfolders = ("aims_gam", "aims_std", "aims_ncl") if expect_soc else ("aims_gam", "aims_std")
-        for defect_name in defect_generator.defect_entries:
+        for defect_name, defect_entry in defect_generator.defect_entries.items():
             defect_dir = os.path.join(output_path, defect_name)
             for subfolder in subfolders:
                 subfolder_dir = os.path.join(defect_dir, subfolder)
                 assert os.path.isfile(os.path.join(subfolder_dir, "parameters.json"))
                 assert os.path.isfile(os.path.join(subfolder_dir, f"{defect_name}.json.gz"))
-                self._check_valid_control_and_geometry(subfolder_dir, subfolder)
+                self._check_valid_control_and_geometry(
+                    subfolder_dir, subfolder, expected_charge=defect_entry.charge_state
+                )
             if not expect_soc:
                 assert not os.path.isdir(os.path.join(defect_dir, "aims_ncl"))
 
         bulk_dir = os.path.join(output_path, f"{formula}_bulk")
         for subfolder in subfolders:
-            self._check_valid_control_and_geometry(os.path.join(bulk_dir, subfolder), subfolder)
+            self._check_valid_control_and_geometry(
+                os.path.join(bulk_dir, subfolder), subfolder, expected_charge=0
+            )
 
-    def _check_valid_control_and_geometry(self, subfolder_dir, subfolder):
+    def _check_valid_control_and_geometry(self, subfolder_dir, subfolder, expected_charge):
         """Check that ``control.in``/``geometry.in`` in ``subfolder_dir`` are valid,
         self-consistent FHI-aims inputs for a periodic calculation (i.e. a `k`-point
         grid is specified, matching ``aims_gam``/``aims_std``/``aims_ncl`` as
-        appropriate, the total charge in ``control.in`` matches the summed
-        ``initial_charge``\\s in ``geometry.in``, spin polarisation/smearing/SCF
-        convergence are set matching ``AIMS_DefectSet.yaml``, and
+        appropriate, the total charge in ``control.in`` matches ``expected_charge``
+        (the defect's ``charge_state``), ``geometry.in`` has no per-atom
+        ``initial_charge`` lines (see ``_structure_for_aims`` -- concentrating any
+        residual charge-state delta onto one atom can produce physically extreme
+        formal ions that crash FHI-aims's free-atom initial-density guess), smearing/
+        SCF convergence are set matching ``AIMS_DefectSet.yaml``, and
         ``aims_gam``/``aims_std`` request geometry relaxation while ``aims_ncl``
         is single-point with spin-orbit coupling included, per
         ``AIMS_NCLDefectSet.yaml``)."""
@@ -212,17 +220,18 @@ class AimsTest(unittest.TestCase):
 
         charge_matches = re.findall(r"^\s*charge\s+([+-]?[0-9]+(?:\.[0-9]*)?)", control, re.MULTILINE)
         assert len(charge_matches) == 1
-        control_charge = float(charge_matches[0])
-        geometry_initial_charge = sum(
-            float(match)
-            for match in re.findall(r"^\s*initial_charge\s+([+-]?[0-9]+(?:\.[0-9]*)?)", geometry, re.MULTILINE)
-        )
-        assert geometry_initial_charge == control_charge
+        assert float(charge_matches[0]) == float(expected_charge)
+        # no per-atom initial_charge lines (see check_occupation_dimensions crash rationale above):
+        assert not re.findall(r"^\s*initial_charge\s+\S+\s*$", geometry, re.MULTILINE)
 
-        # spin polarisation, smearing and SCF iteration limit are always set, matching
-        # AIMS_DefectSet.yaml (independent of relaxation/SOC stage):
-        assert re.findall(r"^\s*spin\s+(\S+)\s*$", control, re.MULTILINE) == ["collinear"]
-        assert re.findall(r"^\s*default_initial_moment\s+(\S+)\s*$", control, re.MULTILINE) == ["0.1"]
+        # smearing and SCF iteration limit are always set, matching AIMS_DefectSet.yaml
+        # (independent of relaxation/SOC stage). `spin`/`default_initial_moment` are
+        # deliberately NOT set by doped's defaults (see AIMS_DefectSet.yaml for why: doped's
+        # per-atom `initial_charge` can assign atoms formal charges beyond what their species'
+        # default valence definition supports for a second spin channel, crashing FHI-aims's
+        # `check_occupation_dimensions` for many higher-|charge| defects):
+        assert not re.findall(r"^\s*spin\s+\S+\s*$", control, re.MULTILINE)
+        assert not re.findall(r"^\s*default_initial_moment\s+\S+\s*$", control, re.MULTILINE)
         assert re.findall(r"^\s*occupation_type\s+(\S+\s+\S+)\s*$", control, re.MULTILINE) == [
             "gaussian 0.05"
         ]

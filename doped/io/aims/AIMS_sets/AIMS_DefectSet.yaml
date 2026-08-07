@@ -12,16 +12,21 @@ output:
     # `get_site_potentials`, for the eFNV charge correction)
 
 # The following mirror the defaults in `doped/io/vasp/VASP_sets/VASP_DefectSet.yaml` and
-# `VASP_RelaxSet.yaml` (i.e. doped's own general-purpose defect-calculation philosophy: spin
-# polarisation on, Gaussian smearing, relaxed geometry, fixed (not per-atom-scaled) SCF energy
-# convergence), so that `doped`'s FHI-aims and VASP defect defaults are internally consistent.
+# `VASP_RelaxSet.yaml` (i.e. doped's own general-purpose defect-calculation philosophy: Gaussian
+# smearing, relaxed geometry, fixed (not per-atom-scaled) SCF energy convergence), so that
+# `doped`'s FHI-aims and VASP defect defaults are internally consistent.
 # `xc` (functional) is deliberately NOT set here, as it is strongly system/study-dependent (see
 # `DefectRelaxSet`/`DefectsSet` docstrings) and must be set via `user_parameters`.
-
-spin: collinear  # spin polarisation likely for defects, mirroring VASP_DefectSet.yaml's `ISPIN = 2`
-default_initial_moment: 0.1  # small symmetry-breaking initial spin nudge (required by `spin
-  # collinear`; see the `spin`/`default_initial_moment` manual entries), mirroring the small
-  # non-zero default `MAGMOM` VASP assigns per atom rather than a specific physical guess
+#
+# `spin`/`default_initial_moment` are deliberately NOT set here (unlike VASP_DefectSet.yaml's
+# blanket `ISPIN = 2`): a blanket `default_initial_moment` (or `spin collinear` without carefully
+# chosen per-atom `initial_moment`s) is explicitly warned against in the FHI-aims manual's
+# `default_initial_moment`/`spin` entries ("a very dangerous keyword if used unwisely... do not
+# use spin collinear just because that seems to be the more general case"). Set `spin` (plus, per
+# the manual's own recommendation, per-atom `initial_moment`s -- e.g. via a `magmom` site property
+# on the input structure, which `pyfhiaims`'s `AimsGeometry.from_structure` reads automatically)
+# explicitly via `user_parameters`/the input structure if spin polarisation is needed for a
+# specific material/defect.
 occupation_type:
   - gaussian
   - 0.05  # width in eV, mirroring VASP_RelaxSet.yaml's `ISMEAR = 0`, `SIGMA = 0.05`
@@ -30,3 +35,10 @@ sc_iter_limit: 100  # mirrors VASP's default `NELM = 100`
 relax_geometry:
   - bfgs
   - 0.01  # force convergence in eV/Angstrom, mirroring VASP_RelaxSet.yaml's `EDIFFG = -0.01`
+override_initial_charge_check: true  # required since `_structure_for_aims` deliberately does not
+  # set per-atom `initial_charge` in geometry.in (see that method's docstring for why); without
+  # this, FHI-aims refuses to start any charged (`charge != 0`) calculation, since the (absent)
+  # per-atom initial charges implicitly sum to 0 != `charge` (see the `override_initial_charge_check`
+  # manual entry -- "This keyword allows to override a stop in the code that occurs if the sum of
+  # the initial charges on atoms in geometry.in ... does not equal the total charge ... set by
+  # ... charge in control.in").
