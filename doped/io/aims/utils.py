@@ -1,12 +1,16 @@
 """
-Utilities for resolving the FHI-aims binary and species-defaults directory.
+Utilities for resolving the FHI-aims binary and species-defaults directory,
+and for reshaping ``pyfhiaims``-parsed quantities to ``doped``'s
+calculator-agnostic conventions.
 """
 
 import shutil
 import warnings
 from pathlib import Path
 
+import numpy as np
 from pymatgen.core import SETTINGS
+from pymatgen.electronic_structure.core import Spin
 from pymatgen.util.typing import PathLike
 
 _SPECIES_DEFAULTS_SHORTHANDS = ("light", "tight", "really_tight")
@@ -124,3 +128,54 @@ def _resolve_species_defaults(species_defaults: PathLike | str) -> str:
             f"files, got: {species_defaults_path}"
         )
     return str(species_defaults_path.resolve())
+
+
+def reshape_eigenvalues_and_occupations(
+    eigenvalues: list[float] | dict[str, list[float]],
+    occupations: list[float] | dict[str, list[float]],
+    n_spins: int,
+    n_kpoints: int,
+) -> dict[Spin, np.ndarray]:
+    """
+    Reshape ``pyfhiaims``-parsed eigenvalues/occupations to the ``pymatgen``-
+    style ``{Spin: array}`` format used by
+    :attr:`~doped.io.outputs.CalculationOutputs.eigenvalues` (array shape
+    ``(nkpoints, nbands, 2)``, with the last axis being (energy in eV,
+    occupation), matching ``Vasprun.eigenvalues``).
+
+    ``AimsImage.get_results(verbosity="all")["eigenvalues"]``/
+    ``["occupations"]`` are flat, per-(k-point, spin) block: a flat list of
+    ``nbands`` values if there is only one (k-point, spin) block (i.e.
+    ``n_spins == n_kpoints == 1``), else a ``dict`` of one such flat list per
+    block, keyed by an (opaque) string identifying the block, in the same
+    order as printed in ``aims.out`` -- i.e. outer loop over k-points, inner
+    loop over spin channels (FHI-aims prints all spin channels together for
+    a given k-point before moving to the next k-point).
+
+    Args:
+        eigenvalues (list[float] | dict[str, list[float]]):
+            ``AimsImage.get_results(verbosity="all")["eigenvalues"]``.
+        occupations (list[float] | dict[str, list[float]]):
+            ``AimsImage.get_results(verbosity="all")["occupations"]``.
+        n_spins (int):
+            Number of spin channels (1 or 2), from
+            ``AimsStdout.header_summary["n_spins"]``.
+        n_kpoints (int):
+            Number of k-points, from
+            ``AimsStdout.header_summary["n_k_points"]``.
+
+    Returns:
+        dict[Spin, np.ndarray]: Eigenvalues/occupations in ``pymatgen``-style
+        ``{Spin: array}`` format.
+    """
+    eigenvalue_blocks = list(eigenvalues.values()) if isinstance(eigenvalues, dict) else [eigenvalues]
+    occupation_blocks = list(occupations.values()) if isinstance(occupations, dict) else [occupations]
+    n_bands = len(eigenvalue_blocks[0])
+
+    # blocks are ordered k-point-major, spin-minor (see docstring), matching this row-major reshape:
+    eigenvalue_array = np.array(eigenvalue_blocks).reshape(n_kpoints, n_spins, n_bands)
+    occupation_array = np.array(occupation_blocks).reshape(n_kpoints, n_spins, n_bands)
+    stacked = np.stack([eigenvalue_array, occupation_array], axis=-1)  # (nkpoints, nspins, nbands, 2)
+
+    spins = [Spin.up, Spin.down][:n_spins]
+    return {spin: stacked[:, spin_index, :, :] for spin_index, spin in enumerate(spins)}

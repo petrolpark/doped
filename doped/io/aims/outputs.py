@@ -16,6 +16,7 @@ from pyfhiaims.outputs.stdout import AimsStdout
 from pymatgen.core.structure import Structure
 from pymatgen.util.typing import PathLike
 
+from doped.io.aims.utils import reshape_eigenvalues_and_occupations
 from doped.io.outputs import CalculationOutputs
 from doped.io.utils import (_get_output_files_and_check_if_multiple,
                              _multiple_files_warning, find_archived_fname)
@@ -103,12 +104,24 @@ def get_calculation_outputs(
     aims_output = get_aims_output(aims_out_path)
     image = aims_output.get_image(-1)
     header_summary = aims_output.header_summary
+    # "eigenvalues"/"occupations" are filtered out of `image.results` (`get_results(verbosity=
+    # "converged")`), so need `verbosity="all"` here:
+    all_results = image.get_results(verbosity="all")
 
     site_potentials = None
     if load_site_potentials:
         site_potentials = get_site_potentials(path, dir_type=label, **kwargs)
 
     vbm, cbm, band_gap = get_band_edge_eigenvalues_from_aims_output(aims_output)
+
+    eigenvalues = None
+    if all_results.get("eigenvalues") is not None:
+        eigenvalues = reshape_eigenvalues_and_occupations(
+            all_results["eigenvalues"],
+            all_results["occupations"],
+            n_spins=header_summary["n_spins"],
+            n_kpoints=header_summary["n_k_points"],
+        )
 
     return CalculationOutputs(
         structure=image.geometry.structure,
@@ -118,8 +131,7 @@ def get_calculation_outputs(
         converged_electronic=image.converged,
         converged_ionic=aims_output.geometry_converged,  # None if not a relaxation
         efermi=image.results.get("fermi_energy"),
-        # eigenvalues=None,  # TODO: `image.results["eigenvalues"]`/["occupations"] are parsed by
-        #   `pyfhiaims`, but need reshaping to the `pymatgen`-style {Spin: array} format used here
+        eigenvalues=eigenvalues,
         # projected_eigenvalues=None,  # TODO: orbital-projected eigenvalue parsing not yet implemented
         # projected_magnetisation=None,  # TODO: non-collinear projected magnetisation not yet implemented
         kpoint_coords=_as_array_or_none(header_summary["k_points"]),

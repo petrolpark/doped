@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from monty.serialization import loadfn
 from pymatgen.core import SETTINGS
+from pymatgen.electronic_structure.core import Spin
 from test_utils import EXAMPLE_DIR, data_dir
 
 # temp
@@ -357,6 +358,14 @@ class AimsOutputsTest(unittest.TestCase):
         assert np.isclose(outputs.vbm, -4.87610472)
         assert np.isclose(outputs.cbm, -4.22510898)
         assert np.isclose(outputs.band_gap, 0.65099574)
+
+        assert list(outputs.eigenvalues.keys()) == [Spin.up]  # non-spin-polarised
+        eigenvalues = outputs.eigenvalues[Spin.up]
+        assert eigenvalues.shape == (1, 1647, 2)  # (nkpoints, nbands, 2), Gamma-only
+        assert np.allclose(eigenvalues[0, 0], (-32793.8863, 2.0))  # lowest (core) band
+        assert np.allclose(eigenvalues[0, 1349], (-4.8761, 2.0))  # VBM, occupied
+        assert np.allclose(eigenvalues[0, 1350], (-4.22511, 0.0))  # CBM, unoccupied
+        assert np.allclose(eigenvalues[0, -1], (10.79808, 0.0))  # highest band
 
     def test_get_calculation_outputs_charged_defect(self):
         """

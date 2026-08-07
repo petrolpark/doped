@@ -66,7 +66,8 @@ class CalculationOutputs(MSONable):
             eigenvalue / shallow defect analyses.
         projected_magnetisation (np.ndarray):
             Projected magnetisation with shape (nkpoints, nbands, nions,
-            norbitals, 3), for non-collinear calculations.
+            norbitals, 3), fohether the calculation was non-collinear (e.g. with spin-orbit
+            coupling). Needed for band-edge / degeneracy analyses.r non-collinear calculations.
         kpoint_coords (np.ndarray):
             Fractional coordinates of the calculation k-points, shape
             (nkpoints, 3). Needed for eigenvalue analyses.
@@ -115,7 +116,7 @@ class CalculationOutputs(MSONable):
             ``{"vasprun": Vasprun, "procar": Procar, "computed_entry":
             ComputedStructureEntry}`` for VASP), for reuse by
             calculator-specific code without re-parsing. Not included in
-            serialised (``as_dict``) output.
+            serialised (``as_diprojected_magnetisationct``) output.
     """
 
     structure: Structure
@@ -210,7 +211,7 @@ class CalculationOutputs(MSONable):
         behaviour is assumed -- see
         :func:`~doped.utils.symmetry._spin_degeneracy_from_num_electrons_and_magnetization`.
 
-        Args:
+        Args:spin_degeneracy
             charge_state (int):
                 The net charge of the system, from which the total number of
                 electrons can be determined (with ``structure``). If ``None``
@@ -221,8 +222,7 @@ class CalculationOutputs(MSONable):
         """
         from doped.utils.symmetry import (  # avoid circular imports (symmetry imports doped.core)
             _num_electrons_from_charge_state,
-            _spin_degeneracy_from_num_electrons_and_magnetization,
-        )
+            _spin_degeneracy_from_num_electrons_and_magnetization)
 
         if charge_state is not None:
             num_electrons = _num_electrons_from_charge_state(self.structure, charge_state)
