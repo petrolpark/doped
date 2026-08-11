@@ -15,6 +15,7 @@ import numpy as np
 from monty.json import MontyEncoder, MSONable
 from monty.serialization import loadfn
 from pyfhiaims.control.control import AimsControl
+from pyfhiaims.control.cube import AimsCube
 from pyfhiaims.geometry.geometry import AimsGeometry
 from pymatgen.core.structure import Structure
 from pymatgen.io.core import InputSet
@@ -31,6 +32,56 @@ default_defect_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_DefectSe
 default_ncl_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_NCLDefectSet.yaml"))
 GAMMA_KPOINTS_SETTINGS = {"k_grid": (1, 1, 1)}
 SOC_MIN_ATOMIC_NUMBER = 31  # matches doped.io.vasp.inputs' `DefectRelaxSet.soc` auto-detection
+
+PLANAR_POTENTIAL_CUBE_TYPE = "hartree_potential"
+"""
+FHI-aims ``output cube`` type giving the full (short- + long-range) electrostatic potential --
+the FHI-aims analog of VASP's ``LOCPOT``. Requested by default in generated ``control.in`` files
+(see ``_planar_potential_cube``), for the FNV (Freysoldt) charge correction (see
+``doped.io.aims.outputs.get_planar_averaged_potentials``).
+"""
+
+PLANAR_POTENTIAL_CUBE_FILENAME = "hartree_potential"
+"""``cube filename`` requested for the ``PLANAR_POTENTIAL_CUBE_TYPE`` output (FHI-aims appends
+the format-appropriate file extension itself; see ``doped.io.aims.outputs.
+PLANAR_POTENTIAL_CUBE_FILE``, which locates the resulting file for parsing)."""
+
+PLANAR_POTENTIAL_TARGET_GRID_SPACING = 0.2  # Angstrom
+"""
+Target ``cube edge`` grid spacing along each lattice vector, for the default
+``PLANAR_POTENTIAL_CUBE_TYPE`` output. Only the planar average of this grid is needed downstream
+(not the full 3D resolution), so a coarser spacing than typical density-visualisation cubes is
+used here by default, to keep cube file sizes reasonable for large defect supercells.
+"""
+
+
+def _planar_potential_cube(
+    structure: Structure, target_spacing: float = PLANAR_POTENTIAL_TARGET_GRID_SPACING
+) -> AimsCube:
+    r"""
+    Build the ``AimsCube`` requesting the FHI-aims ``hartree_potential`` cube output for
+    ``structure``, needed to compute planar-averaged electrostatic potentials for the FNV
+    (Freysoldt) charge correction (see ``doped.io.aims.outputs.get_planar_averaged_potentials``).
+
+    The grid step (``cube edge``) along each axis is set explicitly, as ``lattice_vector /
+    round(|lattice_vector| / target_spacing)``, rather than relying on FHI-aims' internal default
+    spacing (which is not guaranteed to tile the cell exactly, per the FHI-aims manual). This
+    ensures that: (1) the cube grid exactly tiles the periodic cell (no partial voxel at the far
+    boundary), so grid axis ``i`` corresponds directly to lattice vector ``i``; and (2) -- since
+    this only depends on the lattice and ``target_spacing`` -- the resulting grid is guaranteed to
+    be identical between a defect supercell and its corresponding bulk supercell, which share the
+    same lattice in ``doped``.
+    """
+    lattice_matrix = structure.lattice.matrix
+    n_points = tuple(max(2, round(length / target_spacing)) for length in structure.lattice.abc)
+    edges = tuple(tuple(float(x) for x in lattice_matrix[i] / n_points[i]) for i in range(3))
+    return AimsCube(
+        type=PLANAR_POTENTIAL_CUBE_TYPE,
+        origin=(0.0, 0.0, 0.0),
+        edges=edges,
+        points=n_points,
+        filename=PLANAR_POTENTIAL_CUBE_FILENAME,
+    )
 
 
 def _with_default_defect_set(user_parameters: dict[str, Any] | None) -> dict[str, Any]:
@@ -132,6 +183,10 @@ class DopedAimsInputSet(InputSet):
         blocks for consecutive species are concatenated with no separating newline, so
         the last line of one species' basis set definition runs directly into the next
         species' comment-banner header (e.g. ``...hydro 5 f 16.0################...``).
+
+        A ``hartree_potential`` cube output (see ``_planar_potential_cube``) is requested by
+        default, for the FNV (Freysoldt) charge correction; this can be overridden (or disabled,
+        with an empty list) by setting ``user_parameters["cubes"]`` explicitly.
         """
         property_flags = {
             "forces": "compute_forces",
@@ -145,6 +200,7 @@ class DopedAimsInputSet(InputSet):
                 parameters[aims_name] = True
 
         outputs = parameters.pop("output", [])
+        parameters.setdefault("cubes", [_planar_potential_cube(self._structure)])
         control_content = AimsControl(parameters=parameters, outputs=outputs).get_content(self._structure)
         control_content = _MISSING_NEWLINE_BEFORE_BANNER_RE.sub(r"\n\1", control_content)
 
@@ -297,6 +353,10 @@ class DefectRelaxSet(MSONable):
                 for the default ``output`` flags requested (needed for the parsing
                 functions in ``doped.io.aims.outputs``); any ``output`` entries given
                 here are added to (rather than replacing) these required defaults.
+                A ``hartree_potential`` cube output is also requested by default (see
+                ``_planar_potential_cube``), for the FNV (Freysoldt) charge correction;
+                unlike ``output``, this is fully replaced (not merged) by a ``"cubes"``
+                entry here (e.g. ``{"cubes": []}`` to disable it).
             user_properties (Sequence[str]):
 
             user_kpoints_settings (dict[str, Any]):

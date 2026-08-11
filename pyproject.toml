@@ -68,6 +68,8 @@ analysis = [
 ]
 aims = [
     "pyfhiaims",
+    "ase",  # for ase.io.cube (used to parse FHI-aims hartree_potential cube files, for the FNV
+    # charge correction; see doped/io/aims/outputs.py)
 ]
 
 [tool.setuptools.packages.find]

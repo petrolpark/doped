@@ -1,22 +1,26 @@
 """
 Parsing of FHI-aims defect / bulk supercell calculation outputs.
 
-These functions load and process FHI-aims output files (``aims.out``, and --
-for eFNV charge corrections -- ``atom_proj_dos`` files), and can provide the
-parsed outputs in calculator-agnostic form
+These functions load and process FHI-aims output files (``aims.out``; ``atom_proj_dos`` files
+for eFNV charge corrections; and ``hartree_potential`` cube files for FNV charge corrections),
+and can provide the parsed outputs in calculator-agnostic form
 (:class:`~doped.io.outputs.CalculationOutputs`) via :func:`get_calculation_outputs`.
 """
 
+import io
 import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from ase.io.cube import read_cube
+from ase.units import Hartree
 from pyfhiaims.outputs.stdout import AimsStdout
 from pymatgen.core.structure import Structure
 from pymatgen.util.typing import PathLike
 
-from doped.io.aims.utils import reshape_eigenvalues_and_occupations
+from doped.io.aims.utils import (cube_header_angstrom_to_bohr,
+                                  reshape_eigenvalues_and_occupations)
 from doped.io.outputs import CalculationOutputs
 from doped.io.utils import (_get_output_files_and_check_if_multiple,
                              _multiple_files_warning, find_archived_fname)
@@ -40,6 +44,8 @@ Part of the ``doped.io`` backend protocol.
 
 FILE_PARSING_ACTIONS = {
     "aims.out": "parse the calculation energy, structure and metadata.",
+    "hartree_potential": "compute planar-averaged electrostatic potentials for the FNV "
+    "(Freysoldt) charge correction.",
 }
 """
 The (FHI-aims) calculation output file types parsed by ``doped``, and what
@@ -54,6 +60,7 @@ def get_calculation_outputs(
     label: str = "calculation",
     parse_projected_eigen: bool | None = None,
     load_site_potentials: bool = False,
+    load_planar_averaged_potentials: bool = False,
     **kwargs,
 ) -> CalculationOutputs:
     """
@@ -88,6 +95,14 @@ def get_calculation_outputs(
             :func:`get_site_potentials`, from the ``atom_proj_dos`` files in
             ``path`` -- the same directory as the parsed ``aims.out``), for
             the Kumagai (eFNV) charge correction. Default is ``False``.
+        load_planar_averaged_potentials (bool):
+            Whether to also parse the planar-averaged electrostatic
+            potentials (via :func:`get_hartree_potential_cube`, from the
+            ``hartree_potential`` cube file in ``path``), for the FNV
+            (Freysoldt) charge correction. Default is ``False``. If ``True``,
+            the full parsed cube (atoms, 3D data grid, origin, spacing) is
+            also retained (for possible future use) as
+            ``CalculationOutputs.raw["hartree_potential_cube"]``.
         **kwargs:
             Additional keyword arguments passed to :func:`get_site_potentials`
             (e.g. ``core_level``, ``min_relative_height``) if
@@ -111,6 +126,12 @@ def get_calculation_outputs(
     site_potentials = None
     if load_site_potentials:
         site_potentials = get_site_potentials(path, dir_type=label, **kwargs)
+
+    planar_averaged_potentials = None
+    hartree_potential_cube = None
+    if load_planar_averaged_potentials:
+        hartree_potential_cube = get_hartree_potential_cube(path, dir_type=label)
+        planar_averaged_potentials = _planar_average_from_cube(hartree_potential_cube)
 
     vbm, cbm, band_gap = get_band_edge_eigenvalues_from_aims_output(aims_output)
 
@@ -144,11 +165,10 @@ def get_calculation_outputs(
         vbm=vbm,
         cbm=cbm,
         band_gap=band_gap,
-        # planar_averaged_potentials=None,  # not planned -- FNV (cube-potential) charge correction is
-        #   not supported for the FHI-aims backend, only eFNV (see `get_site_potentials`)
+        planar_averaged_potentials=planar_averaged_potentials,
         site_potentials=site_potentials,
         run_metadata=dict(aims_output.metadata),
-        raw={"aims_output": aims_output},
+        raw={"aims_output": aims_output, "hartree_potential_cube": hartree_potential_cube},
     )
 
 
@@ -265,10 +285,15 @@ def get_n_electrons_from_aims_output(aims_output: AimsStdout) -> int:
 
     FHI-aims directly prints "Formal number of electrons (from input
     files)", which ``pyfhiaims`` already parses into
-    ``AimsStdout.header_summary["n_electrons"]``. So this is a direct read,
-    not a reconstruction.
+    ``AimsStdout.header_summary["n_electrons"]``. However, this printed value
+    is computed from the (neutral) input geometry/species alone, *before*
+    the ``charge`` keyword (if set in ``control.in``) is applied to
+    renormalise the electron count -- so any explicit ``charge`` must be
+    subtracted here to get the actual number of electrons in the
+    calculation.
     """
-    return aims_output.header_summary["n_electrons"]
+    charge = float(aims_output.metadata.get("charge", 0))
+    return int(aims_output.header_summary["n_electrons"] - charge)
 
 
 def get_neutral_n_electrons(structure: Structure) -> int:
@@ -603,3 +628,141 @@ def get_site_potentials(
             for atom_index in range(1, n_atoms + 1)
         ]
     )
+
+
+HARTREE_TO_EV = Hartree  # 1 Hartree in eV (``ase.units.Hartree``)
+
+PLANAR_POTENTIAL_CUBE_FILE = "hartree_potential"
+"""
+Substring identifying the FHI-aims ``hartree_potential`` cube-file output, used generically by
+``doped.analysis`` to check for the presence of FNV charge-correction data, and in informative
+warning/error messages.
+
+Part of the ``doped.io`` backend protocol.
+"""
+
+
+def get_hartree_potential_cube(path: PathLike, dir_type: str = "bulk") -> dict:
+    r"""
+    Parse the FHI-aims ``hartree_potential`` cube file for the calculation in
+    ``path``, giving the full-electrostatic-potential grid, needed for the
+    FNV (Freysoldt) finite-size charge correction (see
+    ``get_planar_averaged_potentials``).
+
+    Locates the ``hartree_potential*.cube`` file output by FHI-aims when
+    ``output cube hartree_potential`` is set in ``control.in`` (requested by
+    default in ``doped``-generated ``control.in`` files; see
+    ``doped.io.aims.inputs._planar_potential_cube``).
+
+    Unlike the standard Gaussian cube-file format (which FHI-aims' cube
+    output otherwise follows), FHI-aims writes the header coordinates
+    (origin, grid vectors, atom positions) in Angstrom rather than Bohr (see
+    the FHI-aims manual, Section 4.5, "Visualizing charge densities and
+    orbitals": "Although these files are written by default in Å, some
+    programs (including jmol), read them in atomic units (bohr) by
+    default."). Generic cube-file readers (e.g. ``ase.io.cube``) assume the
+    standard Bohr convention and would silently mis-scale an FHI-aims cube
+    file's header coordinates if used directly, so the header is first
+    converted to the standard Bohr convention (see ``doped.io.aims.utils.
+    cube_header_angstrom_to_bohr``), then parsed with ``ase.io.cube.
+    read_cube`` -- giving the *full* parsed cube (atoms, 3D data grid,
+    origin, spacing), for possible future use beyond the planar average
+    computed in ``get_planar_averaged_potentials`` (e.g. visualisation, or
+    alternative correction schemes).
+
+    Note that the sign/absolute-reference convention of FHI-aims'
+    ``hartree_potential`` cube output, relative to that of VASP's ``LOCPOT``
+    (which the downstream ``pymatgen-analysis-defects`` Freysoldt correction
+    code was written against), has not yet been empirically checked against
+    a real defect/bulk calculation pair -- treat FNV corrections computed
+    from this with some caution until verified.
+
+    Part of the ``doped.io`` backend protocol.
+
+    Args:
+        path (PathLike):
+            Path to the FHI-aims calculation directory containing the
+            ``hartree_potential*.cube`` file.
+        dir_type (str):
+            Type of directory being parsed (``"bulk"`` or ``"defect"``), for
+            informative warnings. Default: ``"bulk"``.
+
+    Returns:
+        dict: As returned by ``ase.io.cube.read_cube`` (keys ``"atoms"``,
+        ``"data"``, ``"origin"``, ``"spacing"``, ``"labels"``, ``"datas"``),
+        with ``"data"``/``"datas"`` converted from Hartree to eV.
+        ``"origin"``/``"spacing"``/``"atoms"`` are in Angstrom, as returned
+        by ``ase`` (the Bohr-to-Angstrom conversion cancels out the
+        Angstrom-to-Bohr conversion applied beforehand).
+    """
+    cube_path, multiple = _get_output_files_and_check_if_multiple(
+        f"{PLANAR_POTENTIAL_CUBE_FILE}.cube", path, search_patterns=[PLANAR_POTENTIAL_CUBE_FILE]
+    )
+    if multiple:
+        _multiple_files_warning(
+            PLANAR_POTENTIAL_CUBE_FILE,
+            path,
+            cube_path,
+            action=FILE_PARSING_ACTIONS[PLANAR_POTENTIAL_CUBE_FILE],
+            dir_type=dir_type,
+        )
+    if not Path(cube_path).exists():
+        raise FileNotFoundError(
+            f"No `{PLANAR_POTENTIAL_CUBE_FILE}*.cube` file found in {dir_type} directory {path}; "
+            f"this is required to compute planar-averaged potentials for the FNV charge correction "
+            f"with FHI-aims (`output cube hartree_potential` must be set in `control.in`)."
+        )
+
+    with open(cube_path) as f:
+        cube_text = f.read()
+
+    dct = read_cube(io.StringIO(cube_header_angstrom_to_bohr(cube_text)), read_data=True)
+    dct["data"] = dct["data"] * HARTREE_TO_EV
+    dct["datas"] = dct["datas"] * HARTREE_TO_EV
+    return dct
+
+
+def get_planar_averaged_potentials(path: PathLike, dir_type: str = "bulk") -> dict[int, np.ndarray]:
+    r"""
+    Get the planar-averaged electrostatic potential along each lattice
+    vector for the FHI-aims calculation in ``path``, needed for the FNV
+    (Freysoldt) finite-size charge correction.
+
+    Averages the 3D grid from :func:`get_hartree_potential_cube` over the
+    two dimensions perpendicular to each grid axis in turn. As that cube
+    grid is generated with its edges set explicitly proportional to the
+    structure's lattice vectors (rather than FHI-aims' internal default,
+    which is Cartesian-axis-aligned), grid axis ``i`` corresponds directly
+    to lattice vector ``i`` -- so this is the same "planar average along a
+    lattice vector" quantity as ``pymatgen``'s ``Locpot.
+    get_average_along_axis`` (used for the analogous VASP FNV correction),
+    including for non-orthogonal cells.
+
+    Part of the ``doped.io`` backend protocol.
+
+    Args:
+        path (PathLike):
+            Path to the FHI-aims calculation directory containing the
+            ``hartree_potential*.cube`` file.
+        dir_type (str):
+            Type of directory being parsed (``"bulk"`` or ``"defect"``), for
+            informative warnings. Default: ``"bulk"``.
+
+    Returns:
+        dict[int, np.ndarray]: ``{axis index: 1D array}`` (in eV), for axis
+        in ``[0, 1, 2]`` (matching the ``a``, ``b``, ``c`` lattice vectors).
+    """
+    return _planar_average_from_cube(get_hartree_potential_cube(path, dir_type=dir_type))
+
+
+def _planar_average_from_cube(cube: dict) -> dict[int, np.ndarray]:
+    """
+    Average the 3D ``cube["data"]`` grid (as parsed by
+    ``get_hartree_potential_cube``) over the two dimensions perpendicular to
+    each grid axis in turn.
+    """
+    data = cube["data"]
+    return {axis: data.mean(axis=tuple(i for i in range(3) if i != axis)) for axis in range(3)}
+
+    data = _read_hartree_potential_cube(cube_path)
+    return {axis: data.mean(axis=tuple(i for i in range(3) if i != axis)) for axis in range(3)}

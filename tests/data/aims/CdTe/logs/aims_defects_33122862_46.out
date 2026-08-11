@@ -1,0 +1,7 @@
+Loading rhel8/default-icl
+  Loading requirement: rhel8/slurm singularity/current rhel8/global cuda/11.4
+    vgl/2.5.1/64 intel-oneapi-compilers/2022.1.0/gcc/b6zld2mz ucx/1.15.0
+    intel-oneapi-mpi/2021.6.0/intel/guxuvcpm
+Task 46 handling defect: v_Cd_-2
+/home/hw653/FHIaims/testcases/doped_tests/CdTe/v_Cd_-2/aims_gam
+Finished defect: v_Cd_-2

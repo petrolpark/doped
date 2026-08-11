@@ -87,6 +87,60 @@ def _discover_aims_species_dir() -> str | None:
     return None
 
 
+BOHR_TO_ANGSTROM = 0.52917721
+"""
+Bohr radius in Angstrom, matching the (slightly rounded) constant used by FHI-aims' own
+``utilities/angstrom_to_bohr.pl`` script (see ``cube_header_angstrom_to_bohr``), for exact
+consistency with that script's output.
+"""
+
+
+def cube_header_angstrom_to_bohr(cube_text: str) -> str:
+    r"""
+    Convert an FHI-aims-written cube file's header (origin, grid vectors, atom positions) from
+    Angstrom to the standard Bohr convention required by the Gaussian cube-file format, so that it
+    can be parsed with a generic cube-file reader (see
+    ``doped.io.aims.outputs.get_hartree_potential_cube``).
+
+    FHI-aims writes cube-file headers in Angstrom rather than the standard Bohr convention (see the
+    FHI-aims manual, Section 4.5, "Visualizing charge densities and orbitals": "Although these
+    files are written by default in Å, some programs (including jmol), read them in atomic units
+    (bohr) by default."). FHI-aims ships a ``utilities/angstrom_to_bohr.pl`` script to perform this
+    exact conversion; this function replicates that script directly in Python (a handful of
+    length-unit divisions on 4 + ``n_atoms`` header lines), rather than requiring ``perl`` and the
+    full FHI-aims source tree (``utilities/`` is not included in compiled-binary-only installations)
+    to be available at runtime.
+
+    Only whitespace-separated numeric fields are rewritten (with an arbitrary, ``ase``-parseable
+    format), so exact column alignment/precision need not match the original ``.pl`` script's
+    (fixed-width, 6-decimal-place) output.
+
+    Args:
+        cube_text (str):
+            The full text content of an FHI-aims-written cube file.
+
+    Returns:
+        str: The cube file content, with header lengths converted to Bohr.
+    """
+    lines = cube_text.splitlines()
+    n_atoms = abs(int(lines[2].split()[0]))
+
+    def _convert_line(line: str, n_leading_fields: int) -> str:
+        fields = line.split()
+        converted = fields[:n_leading_fields] + [
+            f"{float(x) / BOHR_TO_ANGSTROM:.10f}" for x in fields[n_leading_fields:]
+        ]
+        return " ".join(converted)
+
+    lines[2] = _convert_line(lines[2], n_leading_fields=1)  # n_atoms, origin_x, origin_y, origin_z
+    for axis in range(3):  # 3 grid-vector lines: n_points, dx, dy, dz
+        lines[3 + axis] = _convert_line(lines[3 + axis], n_leading_fields=1)
+    for atom in range(n_atoms):  # atomic_number, charge, x, y, z
+        lines[6 + atom] = _convert_line(lines[6 + atom], n_leading_fields=2)
+
+    return "\n".join(lines) + "\n"
+
+
 def _resolve_species_defaults(species_defaults: PathLike | str) -> str:
     """Return an existing directory containing FHI-aims species-default files.
 
