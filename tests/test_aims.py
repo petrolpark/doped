@@ -116,6 +116,7 @@ class AimsTest(unittest.TestCase):
             user_parameters={"xc": "pbesol"},
             expect_soc=False,  # Mg/O < 31
             generate_supercell=False,
+            rattle=True,
         )
 
     def test_Cu2SiSe3_defect_input_generation(self):
@@ -154,7 +155,13 @@ class AimsTest(unittest.TestCase):
         )
 
     def _generate_and_check_defect_inputs(
-        self, structure, material_dir_name, user_parameters, expect_soc, generate_supercell=True
+        self,
+        structure,
+        material_dir_name,
+        user_parameters,
+        expect_soc,
+        generate_supercell=True,
+        rattle=False,
     ):
         """Generate defects for ``structure`` and write/check an FHI-aims input set
         for each, in ``self.aims_output_path / material_dir_name``.
@@ -169,6 +176,13 @@ class AimsTest(unittest.TestCase):
         when ``structure`` is already the desired defect supercell (e.g. a real
         VASP calculation supercell, to match its defect supercells exactly),
         rather than a primitive/unit cell to auto-generate a supercell from.
+
+        ``rattle`` is passed to ``DefectsSet.write_files``; set to ``True`` so
+        defect geometries are ``ShakeNBreak``-rattled before writing, letting the
+        relaxation escape the exact (unbroken) site symmetry of the unperturbed
+        defect structure (otherwise gradient-based relaxation from an exactly
+        symmetric starting geometry cannot spontaneously lower that symmetry,
+        even when a lower-symmetry, lower-energy minimum exists).
         """
         defect_generator = DefectsGenerator(structure, generate_supercell=generate_supercell)
         output_path = self.aims_output_path / material_dir_name
@@ -180,7 +194,7 @@ class AimsTest(unittest.TestCase):
             species_defaults="light",
         )
         assert defects_set.soc is expect_soc
-        defects_set.write_files(output_path=output_path, rattle=False, processes=1)
+        defects_set.write_files(output_path=output_path, rattle=rattle, processes=1)
 
         assert len(defects_set) == len(defect_generator.defect_entries)
         formula = defect_generator.bulk_supercell.composition.get_reduced_formula_and_factor(
@@ -285,23 +299,39 @@ class MgOOutputsTest(unittest.TestCase):
     Unlike the ``CdTe`` test data (only used for input-generation testing
     above), the ``MgO`` ``Mg_O`` antisite defect (all charge states) has a
     matching set of *real* VASP calculation outputs checked into the repo
-    (``examples/MgO/Defects/Pre_Calculated_Results``), so aims-parsed values
-    can be cross-checked against an independent code/parser, rather than
-    only against hardcoded numbers copied from a single run of the parser
-    under test (which isn't a meaningful correctness check -- so tests of
-    that form, e.g. for ``energy``/``efermi``/``vbm``/``cbm``/raw eigenvalue
-    values, are intentionally not included here).
+    (``examples/MgO/Defects/Pre_Calculated_Results``), generated from the
+    *same* (216-atom) supercell as the aims data here, so aims-parsed values
+    can be directly cross-checked against an independent code/parser,
+    rather than only against hardcoded numbers copied from a single run of
+    the parser under test (which isn't a meaningful correctness check -- so
+    tests of that form, e.g. for ``energy``/``efermi``/``vbm``/``cbm``/raw
+    eigenvalue values, are intentionally not included here).
+
+    Not all VASP-tested properties of this data can currently be cross-
+    checked: ``get_eigenvalue_analysis()`` (band-edge state/(un)occupied
+    localised state character, tested for this exact VASP data in
+    ``test_analysis.py``) requires ``projected_eigenvalues``, which the
+    aims backend does not yet parse (see ``doped/io/aims/outputs.py``), so
+    raises ``FileNotFoundError`` for aims-parsed data; and
+    ``degeneracy_factors["orientational degeneracy"]`` was found to not
+    match between backends (see ``test_spin_degeneracy_matches_vasp``) --
+    apparently a genuine gap/bug in the generic symmetry analysis for the
+    aims backend, rather than a data issue, meriting separate investigation.
     """
 
     def setUp(self):
-        self.mgo_prim = Structure.from_file(f"{EXAMPLE_DIR}/MgO/Input_files/MgO_POSCAR_prim")
+        vasp_pre_calculated_path = Path(EXAMPLE_DIR) / "MgO" / "Defects" / "Pre_Calculated_Results"
+        # real (216-atom) VASP bulk supercell -- the aims test data below was (re)generated
+        # directly from this structure (`generate_supercell=False`; see
+        # `AimsTest.test_MgO_defect_input_generation`), so its lattice is used as the ground
+        # truth for the aims-parsed structures' lattice below:
+        self.mgo_bulk_supercell = Structure.from_file(str(vasp_pre_calculated_path / "MgO_bulk" / "vasp_std" / "POSCAR"))
         self.aims_output_path = Path(data_dir) / "aims" / "MgO"
         self.bulk_dir = self.aims_output_path / "MgO_bulk" / "aims_gam"
         self.charged_dirs = {
             charge: self.aims_output_path / f"Mg_O_{'+' if charge else ''}{charge}" / "aims_gam"
             for charge in (0, 1, 2, 3, 4)
         }
-        vasp_pre_calculated_path = Path(EXAMPLE_DIR) / "MgO" / "Defects" / "Pre_Calculated_Results"
         self.vasp_bulk_dir = vasp_pre_calculated_path / "MgO_bulk" / "vasp_std"
         self.vasp_charged_dirs = {
             charge: vasp_pre_calculated_path / f"Mg_O_{'+' if charge else ''}{charge}" / "vasp_std"
@@ -326,16 +356,16 @@ class MgOOutputsTest(unittest.TestCase):
             get_aims_output(self.aims_output_path / "MgO_bulk" / "aims_gam" / "not_a_real_file.out")
 
     def test_get_n_electrons_from_aims_output(self):
-        """96-atom Mg48O48 bulk cell: 48*12 + 48*8 = 960 electrons."""
-        assert get_n_electrons_from_aims_output(self.bulk_output) == 960
+        """216-atom Mg108O108 bulk cell: 108*12 + 108*8 = 2160 electrons."""
+        assert get_n_electrons_from_aims_output(self.bulk_output) == 2160
         # Mg_O antisite (Mg on O site) with charge +1: one fewer O, one more Mg, plus +1 charge:
-        assert get_n_electrons_from_aims_output(self.charged_outputs[1]) == 960 + 4 - 1
+        assert get_n_electrons_from_aims_output(self.charged_outputs[1]) == 2160 + 4 - 1
 
     def test_get_neutral_n_electrons(self):
         structure = self.bulk_output.get_image(-1).geometry.structure
-        assert get_neutral_n_electrons(structure) == 960
+        assert get_neutral_n_electrons(structure) == 2160
         charged_structure = self.charged_outputs[1].get_image(-1).geometry.structure
-        assert get_neutral_n_electrons(charged_structure) == 960 + 4  # Mg49O47, neutral electron count
+        assert get_neutral_n_electrons(charged_structure) == 2160 + 4  # Mg109O107, neutral electron count
 
     def test_total_charge_from_aims_output(self):
         for charge, aims_output in self.charged_outputs.items():
@@ -348,9 +378,9 @@ class MgOOutputsTest(unittest.TestCase):
             assert get_magnetization_from_aims_output(aims_output) == 0.0
 
     def test_spin_degeneracy_from_aims_output(self):
-        # bulk: even (960) electrons, zero magnetization -> singlet:
+        # bulk: even (2160) electrons, zero magnetization -> singlet:
         assert spin_degeneracy_from_aims_output(self.bulk_output) == 1
-        # Mg_O_+1: odd (963) electrons -> doublet:
+        # Mg_O_+1: odd (2163) electrons -> doublet:
         assert spin_degeneracy_from_aims_output(self.charged_outputs[1]) == 2
         # explicit charge_state overrides the auto-determined electron count:
         assert spin_degeneracy_from_aims_output(self.bulk_output, charge_state=1) == 2
@@ -377,17 +407,17 @@ class MgOOutputsTest(unittest.TestCase):
 
         assert outputs.calculator == "aims"
         assert str(outputs.directory) == str(self.bulk_dir)
-        assert len(outputs.structure) == 96  # Mg48O48 bulk supercell
+        assert len(outputs.structure) == 216  # Mg108O108 bulk supercell, matching the real VASP supercell
         assert outputs.structure.composition.reduced_formula == "MgO"
         assert outputs.converged_electronic is True
         assert outputs.converged_ionic is True
-        assert outputs.nelect == 960  # 48*12 + 48*8
+        assert outputs.nelect == 2160  # 108*12 + 108*8
         assert outputs.charge == 0
         assert outputs.magnetization == 0.0
         assert outputs.spin_degeneracy() == 1
         assert outputs.spin_degeneracy(charge_state=0) == 1
         assert int(outputs.run_metadata["charge"]) == 0
-        assert outputs.run_metadata["num_electrons"] == 960.0
+        assert outputs.run_metadata["num_electrons"] == 2160.0
         assert outputs.run_metadata["xc"] == "pbesol"  # matches the real VASP MgO calculations
 
         # `aims_gam` is Gamma-point-only with no `output k_point_list` set, so `pyfhiaims`
@@ -407,24 +437,29 @@ class MgOOutputsTest(unittest.TestCase):
         assert np.isclose(unoccupied[:, 0].min(), outputs.cbm)
 
         # `aims`-generated defect supercells use a fixed unit cell (no `relax_unit_cell` in
-        # `control.in`), so the parsed structure's lattice should exactly match the supercell
-        # built from the real VASP-relaxed MgO primitive cell used to generate these defects:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            bulk_supercell = DefectsGenerator(self.mgo_prim).bulk_supercell
-        assert np.allclose(outputs.structure.lattice.matrix, bulk_supercell.lattice.matrix)
+        # `control.in`), and were generated directly from the real (216-atom) VASP bulk
+        # supercell (`generate_supercell=False`), so the parsed structure's lattice should
+        # exactly match it:
+        assert np.allclose(outputs.structure.lattice.matrix, self.mgo_bulk_supercell.lattice.matrix)
+        assert len(outputs.structure) == len(self.mgo_bulk_supercell)
 
     def test_get_calculation_outputs_matches_vasp(self):
         """
         Test that the FHI-aims-parsed ``CalculationOutputs`` for the
         ``Mg_O`` antisite defect (all charge states) agree with the real
         VASP calculation outputs for the same defect/charge states
-        (``examples/MgO/Defects/Pre_Calculated_Results``) on the physical
-        quantities that should be code-independent -- charge state, spin
-        degeneracy and electronic convergence -- despite the two codes using
-        entirely different supercells (96 aims atoms vs. 216 VASP atoms) and
-        pseudopotential/all-electron treatments (so absolute energies/
-        electron counts are not, and should not be, expected to match).
+        (``examples/MgO/Defects/Pre_Calculated_Results``).
+
+        Unlike the earlier ``CdTe``/``v_Cd_-2`` case, the aims and VASP
+        ``MgO`` calculations use the *same* (216-atom) supercell (the aims
+        inputs were generated directly from the real VASP bulk supercell,
+        ``generate_supercell=False`` -- see
+        ``AimsTest.test_MgO_defect_input_generation``), so their structures'
+        atom counts and lattices should match exactly, in addition to the
+        code-independent physical quantities (charge state, spin
+        degeneracy, electronic convergence). Absolute energies/electron
+        counts still aren't expected to match (pseudopotential vs.
+        all-electron treatments, and differing XC functionals).
         """
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -433,6 +468,8 @@ class MgOOutputsTest(unittest.TestCase):
         assert aims_bulk.charge == vasp_bulk.charge == 0
         assert aims_bulk.spin_degeneracy() == vasp_bulk.spin_degeneracy() == 1
         assert aims_bulk.converged_electronic is vasp_bulk.converged_electronic is True
+        assert len(aims_bulk.structure) == len(vasp_bulk.structure) == 216
+        assert np.allclose(aims_bulk.structure.lattice.matrix, vasp_bulk.structure.lattice.matrix)
 
         for charge, charged_dir in self.charged_dirs.items():
             with warnings.catch_warnings():
@@ -447,6 +484,47 @@ class MgOOutputsTest(unittest.TestCase):
             assert vasp_outputs.converged_electronic is True
             assert aims_outputs.spin_degeneracy() == vasp_outputs.spin_degeneracy()
             assert int(aims_outputs.run_metadata["charge"]) == charge
+            assert len(aims_outputs.structure) == len(vasp_outputs.structure) == 216
+            assert np.allclose(aims_outputs.structure.lattice.matrix, vasp_outputs.structure.lattice.matrix)
+
+    def test_spin_degeneracy_matches_vasp(self):
+        """
+        Test that the ``DefectEntry.degeneracy_factors["spin degeneracy"]``
+        computed via the aims backend for the ``Mg_O`` antisite (all charge
+        states) matches the same quantity computed via the VASP backend for
+        the real ``examples/MgO/Defects/Pre_Calculated_Results`` data --
+        mirroring the check already made of this VASP data in
+        ``test_analysis.py::DopedParsingTestCase::test_eigenvalues_parsing_
+        and_warnings`` (``degeneracy_factors["spin degeneracy"] == 2`` for
+        ``Mg_O_+1``).
+
+        ``degeneracy_factors["orientational degeneracy"]`` is *not* compared
+        here, as it did not match between backends when checked manually
+        (VASP: 24/24/8/8/12 for charges 0-4; aims: 1 for all) -- this
+        appears to be a genuine gap/bug in the generic orientational-
+        degeneracy symmetry analysis for the aims backend (`doped.utils.
+        symmetry`), rather than a data issue, and needs separate
+        investigation before it can be meaningfully tested.
+        """
+        for charge, charged_dir in self.charged_dirs.items():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                aims_defect_entry = DefectParser.from_paths(
+                    defect_path=str(charged_dir),
+                    bulk_path=str(self.bulk_dir),
+                    calculator="aims",
+                    skip_corrections=True,
+                ).defect_entry
+                vasp_defect_entry = DefectParser.from_paths(
+                    defect_path=str(self.vasp_charged_dirs[charge]),
+                    bulk_path=str(self.vasp_bulk_dir),
+                    skip_corrections=True,
+                ).defect_entry
+
+            assert (
+                aims_defect_entry.degeneracy_factors["spin degeneracy"]
+                == vasp_defect_entry.degeneracy_factors["spin degeneracy"]
+            )
 
     def test_get_calculation_outputs_site_potentials(self):
         """
