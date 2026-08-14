@@ -9,21 +9,24 @@ and can provide the parsed outputs in calculator-agnostic form
 
 import io
 import re
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from ase.io.cube import read_cube
 from ase.units import Hartree
+from monty.io import zopen
 from pyfhiaims.outputs.stdout import AimsStdout
 from pymatgen.core.structure import Structure
+from pymatgen.electronic_structure.core import Spin
 from pymatgen.util.typing import PathLike
 
 from doped.io.aims.utils import (cube_header_angstrom_to_bohr,
-                                  reshape_eigenvalues_and_occupations)
+                                 reshape_eigenvalues_and_occupations)
 from doped.io.outputs import CalculationOutputs
 from doped.io.utils import (_get_output_files_and_check_if_multiple,
-                             _multiple_files_warning, find_archived_fname)
+                            _multiple_files_warning, find_archived_fname)
 
 CALC_OUTPUT_MASK = ("aims.out", "aims.out.gz")
 """
@@ -42,10 +45,20 @@ Priority order when auto-detecting (FHI-aims) calculation subfolders (see
 Part of the ``doped.io`` backend protocol.
 """
 
+MULLIKEN_FILE = "Mulliken.out"
+"""
+Filename of the full per-(atom, spin, `k`-point, band) Mulliken-decomposed
+eigenvalue output (written when ``output mulliken`` is set in
+``control.in``), used to populate ``CalculationOutputs.projected_eigenvalues``.
+
+Part of the ``doped.io`` backend protocol.
+"""
+
 FILE_PARSING_ACTIONS = {
     "aims.out": "parse the calculation energy, structure and metadata.",
     "hartree_potential": "compute planar-averaged electrostatic potentials for the FNV "
     "(Freysoldt) charge correction.",
+    MULLIKEN_FILE: "parse orbital-projected eigenvalues.",
 }
 """
 The (FHI-aims) calculation output file types parsed by ``doped``, and what
@@ -73,9 +86,9 @@ def get_calculation_outputs(
     output`` functions in this module). FHI-aims output parsing (and charge
     corrections) is still in development, so several ``CalculationOutputs``
     fields are not yet populated here -- see the commented-out fields below.
-    ``label`` and ``parse_projected_eigen`` are accepted (and currently
-    ignored) to match the generic ``doped.io`` backend protocol (used for
-    informative warnings/parsing efficiency choices with other calculators).
+    ``label`` is accepted (and currently ignored) to match the generic
+    ``doped.io`` backend protocol (used for informative warnings with other
+    calculators).
 
     Part of the ``doped.io`` backend protocol.
 
@@ -88,8 +101,12 @@ def get_calculation_outputs(
             ``"defect"``), for informative warnings. Default is
             ``"calculation"``.
         parse_projected_eigen (bool):
-            Whether to parse orbital projections, for eigenvalue / shallow
-            defect analyses. Default is ``None``.
+            Whether to parse orbital-projected eigenvalues (via
+            :func:`get_projected_eigenvalues`, from the ``Mulliken.out`` file
+            in ``path``), for eigenvalue / shallow defect analyses. This is a
+            large, expensive file to parse, so is only done if ``True``
+            (unlike other ``doped.io`` backends, where this defaults to
+            being parsed if available). Default is ``None`` (not parsed).
         load_site_potentials (bool):
             Whether to also parse the atomic-site potentials (via
             :func:`get_site_potentials`, from the ``atom_proj_dos`` files in
@@ -144,6 +161,15 @@ def get_calculation_outputs(
             n_kpoints=header_summary["n_k_points"],
         )
 
+    projected_eigenvalues = get_projected_eigenvalues(
+        path,
+        n_spins=header_summary["n_spins"],
+        n_kpoints=header_summary["n_k_points"],
+        n_atoms=len(image.geometry.structure),
+        dir_type=label,
+        parse_projected_eigen=parse_projected_eigen,
+    )
+
     return CalculationOutputs(
         structure=image.geometry.structure,
         energy=image.results["total_energy"],
@@ -153,15 +179,14 @@ def get_calculation_outputs(
         converged_ionic=aims_output.geometry_converged,  # None if not a relaxation
         efermi=image.results.get("fermi_energy"),
         eigenvalues=eigenvalues,
-        # projected_eigenvalues=None,  # TODO: orbital-projected eigenvalue parsing not yet implemented
-        # projected_magnetisation=None,  # TODO: non-collinear projected magnetisation not yet implemented
+        projected_eigenvalues=projected_eigenvalues,
+        # projected_magnetisation=None,
         kpoint_coords=_as_array_or_none(header_summary["k_points"]),
         kpoint_weights=_as_array_or_none(header_summary["k_point_weights"]),
         nelect=get_n_electrons_from_aims_output(aims_output),
         charge=total_charge_from_aims_output(aims_output),
         magnetization=get_magnetization_from_aims_output(aims_output),
-        # noncollinear=None,  # TODO: determine from `aims_output.metadata`/`control.in`, not yet
-        #   implemented
+        # noncollinear=None,
         vbm=vbm,
         cbm=cbm,
         band_gap=band_gap,
@@ -196,6 +221,151 @@ def get_aims_output(aims_out_path: PathLike, **kwargs) -> AimsStdout:
         raise FileNotFoundError(
             f"aims.out file not found at {aims_out_path}(.gz/.xz/.bz/.lzma)"
         ) from exc
+
+
+_MULLIKEN_HEADER_RE = re.compile(
+    r"^\s*State\s+eigenvalue\s+occ\.number\s+total((?:\s+l=\d+)+)\s*$", re.MULTILINE
+)
+_MULLIKEN_SPIN_RE = re.compile(r"^\s*Spin channel:\s*(up|down)\s*$", re.MULTILINE)
+_MULLIKEN_ROW_RE = re.compile(
+    r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+\s+-?\d+\.\d+((?:\s+-?\d+\.\d+)+)\s*$", re.MULTILINE
+)
+
+
+def _parse_mulliken_projected_eigenvalues(
+    text: str, n_spins: int, n_kpoints: int, n_atoms: int
+) -> dict[Spin, np.ndarray]:
+    """
+    Parse the text content of a ``Mulliken.out`` file into ``pymatgen``-style
+    ``{Spin: array}`` orbital-projected eigenvalues (array shape
+    ``(nkpoints, nbands, natoms, norbitals)``, matching
+    :attr:`~doped.io.outputs.CalculationOutputs.projected_eigenvalues`).
+
+    ``Mulliken.out`` (written when ``output mulliken`` is set in
+    ``control.in``) is nested ``Atom number`` > (``Spin channel``, if spin-
+    polarised) > ``k point number`` > one row per band, with columns
+    ``State eigenvalue occ.number total l=0 l=1 ...`` (the orbital-angular-
+    momentum-resolved Mulliken populations, summed over `m`). Only the
+    ``l=...`` columns are extracted here (the eigenvalues/occupations
+    themselves are already available via
+    :func:`~doped.io.aims.utils.reshape_eigenvalues_and_occupations`).
+
+    Args:
+        text (str):
+            The full text content of the ``Mulliken.out`` file.
+        n_spins (int):
+            Expected number of spin channels (1 or 2), from
+            ``AimsStdout.header_summary["n_spins"]``.
+        n_kpoints (int):
+            Expected number of `k`-points, from
+            ``AimsStdout.header_summary["n_k_points"]``.
+        n_atoms (int):
+            Expected number of atoms, from the calculation structure.
+
+    Returns:
+        dict[Spin, np.ndarray]: Orbital-projected eigenvalues in
+        ``pymatgen``-style ``{Spin: array}`` format.
+    """
+    header_match = _MULLIKEN_HEADER_RE.search(text)
+    if header_match is None:
+        raise ValueError(
+            "Could not find the Mulliken-analysis column header (`State eigenvalue occ.number "
+            "total l=0 ...`) in this `Mulliken.out` file."
+        )
+    n_orbitals = len(re.findall(r"l=\d+", header_match.group(1)))
+
+    file_has_spin_channels = _MULLIKEN_SPIN_RE.search(text) is not None
+    if file_has_spin_channels != (n_spins == 2):
+        raise ValueError(
+            f"Expected {n_spins} spin channel(s) (from the parsed `aims.out` "
+            f"`header_summary['n_spins']`), but this `Mulliken.out` file "
+            f"{'has' if file_has_spin_channels else 'does not have'} `Spin channel:` markers."
+        )
+
+    row_matches = _MULLIKEN_ROW_RE.findall(text)
+    n_rows_per_band = n_atoms * n_spins * n_kpoints
+    if n_rows_per_band == 0 or len(row_matches) % n_rows_per_band != 0:
+        raise ValueError(
+            f"Number of parsed Mulliken-analysis rows ({len(row_matches)}) in this `Mulliken.out` "
+            f"file is not divisible by `n_atoms * n_spins * n_kpoints` ({n_atoms} * {n_spins} * "
+            f"{n_kpoints} = {n_rows_per_band}); could not determine the number of bands."
+        )
+    n_bands = len(row_matches) // n_rows_per_band
+
+    # rows appear in atom-major, spin-major, k-point-major, band-major order (matching the nested
+    # `Atom number` > `Spin channel` > `k point number` > band-row block structure of the file):
+    projections = np.array(
+        [[float(value) for value in tail.split()] for tail in row_matches]
+    ).reshape(n_atoms, n_spins, n_kpoints, n_bands, n_orbitals)
+    projections = projections.transpose(1, 2, 3, 0, 4)  # -> (n_spins, nkpoints, nbands, natoms, norbitals)
+
+    if n_spins == 1:
+        return {Spin.up: projections[0]}
+
+    spin_order = [Spin.up if label == "up" else Spin.down for label in _MULLIKEN_SPIN_RE.findall(text)[:2]]
+    return {spin: projections[index] for index, spin in enumerate(spin_order)}
+
+
+def get_projected_eigenvalues(
+    path: PathLike,
+    n_spins: int,
+    n_kpoints: int,
+    n_atoms: int,
+    dir_type: str = "calculation",
+    parse_projected_eigen: bool | None = None,
+) -> dict[Spin, np.ndarray] | None:
+    """
+    Get the orbital-projected eigenvalues for the FHI-aims calculation in
+    ``path``, from its ``Mulliken.out`` file (written when ``output
+    mulliken`` is set in ``control.in``; see ``AIMS_DefectSet.yaml``).
+
+    ``Mulliken.out`` can be very large (one row per (atom, spin, `k`-point,
+    band)), so unlike other ``doped.io`` backends, this is only parsed if
+    ``parse_projected_eigen`` is explicitly ``True``.
+
+    Part of the ``doped.io`` backend protocol.
+
+    Args:
+        path (PathLike):
+            Path to the FHI-aims calculation directory (containing the
+            ``Mulliken.out`` file to parse).
+        n_spins (int):
+            Number of spin channels (1 or 2), from
+            ``AimsStdout.header_summary["n_spins"]``.
+        n_kpoints (int):
+            Number of `k`-points, from
+            ``AimsStdout.header_summary["n_k_points"]``.
+        n_atoms (int):
+            Number of atoms in the calculation structure.
+        dir_type (str):
+            Type of directory being parsed (``"bulk"``, ``"defect"``, etc),
+            for informative warnings. Default: ``"calculation"``.
+        parse_projected_eigen (bool):
+            Whether to parse orbital-projected eigenvalues. If not ``True``,
+            this function returns ``None`` without searching for
+            ``Mulliken.out``. If ``True`` and ``Mulliken.out`` is not found,
+            a warning is raised and ``None`` is returned. Default is ``None``
+            (not parsed).
+
+    Returns:
+        dict[Spin, np.ndarray] | None: The parsed orbital-projected
+        eigenvalues, or ``None`` if not requested/found.
+    """
+    if parse_projected_eigen is not True:
+        return None
+
+    mulliken_path = find_archived_fname(str(Path(path) / MULLIKEN_FILE), raise_error=False)
+    if mulliken_path is None:
+        warnings.warn(
+            f"`parse_projected_eigen=True` but no `{MULLIKEN_FILE}` file found in {dir_type} "
+            f"directory {path} (`output mulliken` must be set in `control.in`); "
+            "`projected_eigenvalues` will not be parsed."
+        )
+        return None
+
+    with zopen(mulliken_path, "rt") as f:
+        text = f.read()
+    return _parse_mulliken_projected_eigenvalues(text, n_spins=n_spins, n_kpoints=n_kpoints, n_atoms=n_atoms)
 
 
 _ATOM_PROJ_DOS_RE = re.compile(r"^atom_proj_dos_[A-Za-z]+(\d+)(_raw)?\.dat$")

@@ -310,9 +310,11 @@ class MgOOutputsTest(unittest.TestCase):
     Not all VASP-tested properties of this data can currently be cross-
     checked: ``get_eigenvalue_analysis()`` (band-edge state/(un)occupied
     localised state character, tested for this exact VASP data in
-    ``test_analysis.py``) requires ``projected_eigenvalues``, which the
-    aims backend does not yet parse (see ``doped/io/aims/outputs.py``), so
-    raises ``FileNotFoundError`` for aims-parsed data; and
+    ``test_analysis.py``) requires ``projected_eigenvalues`` with a
+    ``PROCAR``-style per-band/per-site/per-orbital-type breakdown, which the
+    aims backend does not (yet) provide in that exact form (only orbital-
+    angular-momentum-resolved Mulliken populations, from ``Mulliken.out`` --
+    see ``test_get_calculation_outputs_projected_eigenvalues`` below); and
     ``degeneracy_factors["orientational degeneracy"]`` was found to not
     match between backends (see ``test_spin_degeneracy_matches_vasp``) --
     apparently a genuine gap/bug in the generic symmetry analysis for the
@@ -443,6 +445,29 @@ class MgOOutputsTest(unittest.TestCase):
         assert np.allclose(outputs.structure.lattice.matrix, self.mgo_bulk_supercell.lattice.matrix)
         assert len(outputs.structure) == len(self.mgo_bulk_supercell)
 
+    def test_get_calculation_outputs_projected_eigenvalues(self):
+        """
+        Test that ``parse_projected_eigen=True`` populates
+        ``projected_eigenvalues`` from ``Mulliken.out``, with the correct
+        shape and a physically-derivable cross-check: the Mulliken
+        decomposition partitions each (normalised) Kohn-Sham state's density
+        across atoms/orbital-angular-momentum channels, so summing the
+        parsed projections over all atoms and orbitals for a single band
+        should recover ~1 (not the band's occupation number, which is a
+        separate, already-parsed quantity) -- not a number merely copied
+        from a single run of the parser under test.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outputs = get_calculation_outputs(self.bulk_dir, label="bulk", parse_projected_eigen=True)
+
+        assert list(outputs.projected_eigenvalues.keys()) == [Spin.up]  # non-spin-polarised
+        projected_eigenvalues = outputs.projected_eigenvalues[Spin.up][0]  # Gamma-only -> single k-point
+        assert projected_eigenvalues.shape == (outputs.run_metadata["num_bands"], 216, 3)  # l=0,1,2
+
+        band_sums = projected_eigenvalues.sum(axis=(1, 2))
+        assert np.allclose(band_sums, 1.0, atol=1e-2)
+
     def test_get_calculation_outputs_matches_vasp(self):
         """
         Test that the FHI-aims-parsed ``CalculationOutputs`` for the
@@ -557,6 +582,47 @@ class MgOOutputsTest(unittest.TestCase):
         assert len(reloaded.structure) == len(outputs.structure)
         assert np.allclose(reloaded.site_potentials, outputs.site_potentials)
         assert np.isclose(reloaded.get_computed_entry().energy, outputs.energy)
+
+
+class CdTeSpinPolarisedOutputsTest(unittest.TestCase):
+    """
+    Test parsing of spin-polarised (``spin collinear``) FHI-aims outputs,
+    using the real ``CdTe``/``v_Cd_+1`` (Cd vacancy, charge +1) data at
+    ``tests/data/aims/CdTe/v_Cd_+1/aims_gam`` -- the only spin-polarised
+    calculation currently in the aims test data (all other charge states use
+    a closed-shell/non-spin-polarised ``default_initial_moment``-free setup).
+    """
+
+    def setUp(self):
+        self.defect_dir = Path(data_dir) / "aims" / "CdTe" / "v_Cd_+1" / "aims_gam"
+
+    def test_get_calculation_outputs_projected_eigenvalues_spin_polarised(self):
+        """
+        As with ``MgOOutputsTest.test_get_calculation_outputs_projected_
+        eigenvalues`` (non-spin-polarised), but checking both spin channels
+        of a genuinely spin-polarised calculation are parsed from
+        ``Mulliken.out`` (``Spin channel: up``/``down`` blocks) into separate
+        ``{Spin.up: array, Spin.down: array}`` entries, each independently
+        satisfying the same per-band sum-to-~1 physical cross-check.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outputs = get_calculation_outputs(
+                self.defect_dir, label="defect", parse_projected_eigen=True
+            )
+
+        assert outputs.magnetization == 3.0  # N_up - N_down, from `aims.out`
+        assert set(outputs.projected_eigenvalues.keys()) == {Spin.up, Spin.down}
+
+        for spin in (Spin.up, Spin.down):
+            projected_eigenvalues = outputs.projected_eigenvalues[spin][0]  # Gamma-only
+            assert projected_eigenvalues.shape == (
+                outputs.run_metadata["num_bands"],
+                len(outputs.structure),
+                4,  # l=0,1,2,3
+            )
+            band_sums = projected_eigenvalues.sum(axis=(1, 2))
+            assert np.allclose(band_sums, 1.0, atol=1e-2)
 
 
 class CdTeChargeCorrectionTest(unittest.TestCase):
