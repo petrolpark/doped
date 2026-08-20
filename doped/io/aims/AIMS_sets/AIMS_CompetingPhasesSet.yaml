@@ -1,0 +1,21 @@
+# Default `control.in` parameters for `doped` competing-phase relaxations (see
+# `doped.chemical_potentials.CompetingPhases.get_aims_relaxation_sets`), mirroring the
+# philosophy of `doped`'s VASP competing-phase defaults (`doped/io/vasp/VASP_sets/VASP_RelaxSet.yaml`):
+# Gaussian smearing (switched to Methfessel-Paxton for metallic phases; see
+# `CompetingPhases._set_default_aims_metal_smearing`), relaxed geometry (atoms, and unit cell
+# shape/volume for non-molecular phases), and a tight SCF energy convergence appropriate for the
+# small unit cells typical of competing phases.
+# `xc` (functional) is deliberately NOT set here, as with `AIMS_DefectSet.yaml`; it must be set via
+# `user_parameters`, and should be chosen consistently with any defect supercell calculations.
+occupation_type:
+  - gaussian
+  - 0.05  # width in eV; switched to Methfessel-Paxton (width 0.2 eV) for metallic phases
+sc_accuracy_etot: 1.0e-06  # eV; tighter than AIMS_DefectSet.yaml's 1e-5, as competing-phase unit
+  # cells are typically much smaller (and thus cheaper) than defect supercells, and the resulting
+  # total energies feed directly into the phase diagram / chemical potential limit determination
+sc_iter_limit: 100  # mirrors VASP's default NELM = 100
+relax_geometry:
+  - bfgs
+  - 0.01  # force convergence in eV/Angstrom, mirroring VASP_RelaxSet.yaml's EDIFFG = -0.01
+cubes: []  # no Hartree-potential cube output needed here (no charge correction required for
+  # neutral competing phases); override via user_parameters (e.g. `{"cubes": [...]}`) if desired

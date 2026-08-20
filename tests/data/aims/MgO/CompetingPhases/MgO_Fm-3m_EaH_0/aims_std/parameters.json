@@ -1,0 +1,1 @@
+{"occupation_type": ["gaussian", 0.05], "sc_accuracy_etot": 1e-06, "sc_iter_limit": 100, "relax_geometry": ["bfgs", 0.01], "cubes": [], "xc": "pbesol", "relax_unit_cell": "full", "k_grid_density": 3.0, "species_dir": "/home/hw653/Documents/fhi-aims.260331/species_defaults/defaults_2020/light"}

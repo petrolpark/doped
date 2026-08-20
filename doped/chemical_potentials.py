@@ -45,6 +45,7 @@ from scipy.spatial import ConvexHull, Delaunay
 from tqdm import tqdm
 
 from doped.generation import _element_sort_func
+from doped.io.aims.chemical_potentials import AimsCompetingPhasesMixin
 from doped.io.vasp.inputs import (
     MODULE_DIR,
     DopedDictSet,
@@ -911,7 +912,7 @@ def _name_entries_and_handle_duplicates(
         entry_names = [get_and_set_competing_phase_name(entry, regenerate=False) for entry in entries]
 
 
-class CompetingPhases(MSONable):
+class CompetingPhases(AimsCompetingPhasesMixin, MSONable):
     def __init__(
         self,
         composition: str | Composition | Structure,

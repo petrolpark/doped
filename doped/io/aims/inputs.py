@@ -30,8 +30,23 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_kpoints_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "KpointsSet.yaml"))
 default_defect_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_DefectSet.yaml"))
 default_ncl_set = loadfn(os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_NCLDefectSet.yaml"))
+default_competing_phases_relax_set = loadfn(
+    os.path.join(MODULE_DIR, "AIMS_sets", "AIMS_CompetingPhasesSet.yaml")
+)
 GAMMA_KPOINTS_SETTINGS = {"k_grid": (1, 1, 1)}
 SOC_MIN_ATOMIC_NUMBER = 31  # matches doped.io.vasp.inputs' `DefectRelaxSet.soc` auto-detection
+
+aims_competing_phases_singlepoint_settings = {
+    "relax_geometry": "none",  # single-point calculation, mirroring VASP's `IBRION = -1`, `NSW = 0`
+    "sc_accuracy_etot": 1.0e-07,  # eV; tighter than `AIMS_CompetingPhasesSet.yaml`'s 1e-6, for the
+    # final total energies used in the phase diagram / chemical potential limit determination
+}
+"""
+Overrides applied on top of ``AIMS_CompetingPhasesSet.yaml`` for the final single-point energy
+calculation of competing phases (see
+``doped.chemical_potentials.CompetingPhases.get_aims_singlepoint_sets``), mirroring VASP's
+``singlepoint_incar_settings`` in ``doped/io/vasp/inputs.py``.
+"""
 
 PLANAR_POTENTIAL_CUBE_TYPE = "hartree_potential"
 """

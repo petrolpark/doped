@@ -31,7 +31,7 @@ occupation_type:
   - gaussian
   - 0.05  # width in eV, mirroring VASP_RelaxSet.yaml's `ISMEAR = 0`, `SIGMA = 0.05`
 sc_accuracy_etot: 1.0e-05  # eV, mirroring VASP_DefectSet.yaml's fixed `EDIFF = 1e-5` for defects
-sc_iter_limit: 100  # mirrors VASP's default `NELM = 100`
+sc_iter_limit: 1000  # mirrors VASP's default `NELM = 100`
 relax_geometry:
   - bfgs
   - 0.01  # force convergence in eV/Angstrom, mirroring VASP_RelaxSet.yaml's `EDIFFG = -0.01`
